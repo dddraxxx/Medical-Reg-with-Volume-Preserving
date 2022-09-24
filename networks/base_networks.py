@@ -210,7 +210,7 @@ class VTNAffineStem(nn.Module):
 if __name__ == "__main__":
     vtn_model = VTN(dim=3)
     vtn_affine_model = VTNAffineStem(dim=3, im_size=512)
-    x = torch.randn(1, 512, 1, 512, 512)
+    x = torch.randn(1, 1, 512, 512, 512)
     y1 = vtn_model(x, x)
     y2 = vtn_affine_model(x, x)
 

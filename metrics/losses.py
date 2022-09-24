@@ -67,9 +67,9 @@ def jacobian_det(flow):
 def total_loss(fixed, moving, flows):
     sim_loss = pearson_correlation(fixed, moving)
     # Regularize all flows
-    if len(fixed.size() == 4): #(N, C, H, W)
+    if len(fixed.size()) == 4: #(N, C, H, W)
         reg_loss = sum([regularize_loss(flow) for flow in flows])
     else:
         reg_loss = sum([regularize_loss_3d(flow) for flow in flows])
-    return sim_loss + reg_loss
+    return sim_loss + reg_loss, reg_loss
 

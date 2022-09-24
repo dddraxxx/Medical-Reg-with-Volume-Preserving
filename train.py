@@ -1,23 +1,36 @@
+from timeit import default_timer
+import json
 import argparse
 import os
+import time
 import torch
 from networks.recursive_cascade_networks import RecursiveCascadeNetwork
 from torch.optim import Adam
 from torch.optim.lr_scheduler import StepLR
+from torch.utils.data import DataLoader
 from metrics.losses import total_loss
-from data_util.ctscan import sample_generator
 import matplotlib.pyplot as plt
 from matplotlib.collections import LineCollection
 import numpy as np
+import datetime as datetime
+
+from data_util.ctscan import sample_generator
+from data_util.dataset import Data, Split
 
 parser = argparse.ArgumentParser()
-parser.add_argument('--b', "--batch_size", type=int, default=1)
-parser.add_argument('--n', "--n_cascades", type=int, default=5)
-parser.add_argument('--e', "--n_epochs", type=int, default=100)
-parser.add_argument('--i', "--n_iters_train", type=int, default=2000)
-parser.add_argument('--iv', "--n_iters_val", type=int, default=2000)
-parser.add_argument('--c', "--checkpoint_frequency", type=int, default=20)
+parser.add_argument('-b', "--batch_size", type=int, default=4)
+parser.add_argument('-n', "--n_cascades", type=int, default=5)
+parser.add_argument('-e', "--epochs", type=int, default=5)
+parser.add_argument("--round", type=int, default=20000)
+parser.add_argument("--val_steps", type=int, default=1000)
+parser.add_argument('-cf', "--checkpoint_frequency", type=int, default=20)
+parser.add_argument('-c', "--checkpoint", type=str, default=None)
 parser.add_argument('--fixed_sample', type=int, default=100)
+parser.add_argument('-g', '--gpu', type=str, default='0', help='GPU to use')
+parser.add_argument('-d', '--dataset', type=str, default='datasets/liver_cust.json', help='Specifies a data config')
+parser.add_argument('--lr', type=float, default=1e-4)
+parser.add_argument('--debug', action='store_true')
+
 args = parser.parse_args()
 
 
@@ -100,44 +113,60 @@ def main():
     if not os.path.exists('./ckp/visualization'):
         print("Creating visualization dir")
         os.makedirs('./ckp/visualization')
+    # Hong Kong time
+    dt = datetime.datetime.now(tz=datetime.timezone(datetime.timedelta(hours=8)))
+    run_id = dt.strftime('%b%d_%H%M%S')
 
-    model = RecursiveCascadeNetwork(n_cascades=args.n, im_size=(512, 512))
+    # read config
+    with open(args.dataset, 'r') as f:
+        cfg = json.load(f)
+        image_size = cfg.get('image_size', [128, 128, 128])
+        image_type = cfg.get('image_type')
+
+    model = RecursiveCascadeNetwork(n_cascades=args.n_cascades, im_size=image_size)
     trainable_params = []
     for submodel in model.stems:
         trainable_params += list(submodel.parameters())
 
     trainable_params += list(model.reconstruction.parameters())
 
-    optim = Adam(trainable_params, lr=1e-4)
+    lr = args.lr
+    optim = Adam(trainable_params, lr=args.lr)
     scheduler = StepLR(optimizer=optim, step_size=10, gamma=0.96)
-    train_generator = iter(sample_generator('./train.txt', batch_size=args.b))
-    val_generator = iter(sample_generator('./validation.txt', batch_size=args.b))
+    print('train', Split.TRAIN)
+    print('Val', Split.VALID)
+    train_dataset = Data(args.dataset, rounds=args.round, scheme=Split.TRAIN)
+    val_dataset = Data(args.dataset, scheme=Split.VALID)
+
+    train_loader = DataLoader(train_dataset, batch_size=args.batch_size, shuffle=True, num_workers=4)
+    val_loader = DataLoader(val_dataset, batch_size=args.batch_size, shuffle=False, num_workers=4)
 
     # Saving the losses
     train_loss_log = []
     reg_loss_log = []
     val_loss_log = []
 
-    for epoch in range(1, args.e + 1):
-        print(f"-----Epoch {epoch} / {args.e}-----")
+    for epoch in range(1, args.epochs + 1):
+        print(f"-----Epoch {epoch} / {args.epochs}-----")
         train_epoch_loss = 0
         train_reg_loss = 0
         vis_batch = []
         model.train()
-        for iteration in range(1, args.i):
-            if iteration % int(0.1 * args.i) == 0:
-                print(f"\t-----Iteration {iteration} / {args.i} -----")
+        t0 = default_timer()
+        for iteration, data in enumerate(train_loader):
+            iteration += 1
+            t1 = default_timer()
             optim.zero_grad()
-            fixed, moving = next(train_generator)
+            fixed, moving = data['voxel1'], data['voxel2']
             fixed = fixed.cuda()
             moving = moving.cuda()
             warped, flows = model(fixed, moving)
-            loss = total_loss(fixed, warped[-1], flows)
+            loss, reg = total_loss(fixed, warped[-1], flows)
             loss.backward()
             optim.step()
 
-            train_epoch_loss += loss.item()
-            train_reg_loss += reg.item()
+            train_epoch_loss = train_epoch_loss + loss.item()
+            train_reg_loss = train_reg_loss + reg.item()
 
             if iteration == args.fixed_sample:
                 vis_batch.append(fixed)
@@ -145,28 +174,40 @@ def main():
                 vis_batch.append(warped)
                 vis_batch.append(flows)
 
+            if iteration%10==0 or args.debug:
+                if iteration<500 or iteration % 500 == 0:
+                    print('*%s* ' % run_id,
+                          time.strftime('%Y-%m-%d %H:%M:%S', time.localtime()),
+                          'Steps %d, Total time %.2f, data %.2f%%. Loss %.3e lr %.3e' % (iteration,
+                                                                                         default_timer() - t0,
+                                                                                         (t1 - t0) / (
+                                                                                             default_timer() - t0),
+                                                                                         loss,
+                                                                                         lr),
+                          end='\n')
+                if iteration%args.val_steps==0 or args.debug:
+                    print(f">>>>> Validation <<<<<")
+                    val_epoch_loss = 0
+                    for iteration, data in enumerate(val_loader):
+                        if iteration % int(0.1 * len(val_loader)) == 0:
+                            print(f"\t-----Iteration {iteration} / {len(val_loader)} -----")
+
+                        with torch.no_grad():
+                            fixed, moving = data['voxel1'], data['voxel2']
+                            fixed = fixed.cuda()
+                            moving = moving.cuda()
+                            warped, flows = model(fixed, moving)
+                            sim, reg = total_loss(fixed, warped[-1], flows)
+                            loss = sim + reg
+                            val_epoch_loss += loss.item()
+                    mean_val_loss = val_epoch_loss / len(val_loader)
+                    print(f"Mean val loss: {mean_val_loss}")
+                    val_loss_log.append(mean_val_loss)
+
         train_loss_log.append(train_epoch_loss / args.i)
         reg_loss_log.append(train_reg_loss / args.i)
 
         model.eval()
-        print(f">>>>> Validation <<<<<")
-
-        val_epoch_loss = 0
-        for iteration in range(1, args.iv):
-            if iteration % int(0.1 * args.iv) == 0:
-                print(f"\t-----Iteration {iteration} / {args.iv} -----")
-
-            with torch.no_grad():
-                fixed, moving = next(val_generator)
-                fixed = fixed.cuda()
-                moving = moving.cuda()
-                warped, flows = model(fixed, moving)
-                sim, reg = total_loss(fixed, warped[-1], flows)
-                loss = sim + reg
-                val_epoch_loss += loss.item()
-
-        val_loss_log.append(val_epoch_loss / args.iv)
-
         scheduler.step()
 
         if epoch % args.c == 0:
@@ -180,5 +221,8 @@ def main():
 
             torch.save(ckp, f'./ckp/model_wts/epoch_{epoch}.pth')
 
-        generate_plots(vis_batch[0], vis_batch[1], vis_batch[2], vis_batch[3], train_loss_log, val_loss_log,
-                       reg_loss_log, epoch)
+        # generate_plots(vis_batch[0], vis_batch[1], vis_batch[2], vis_batch[3], train_loss_log, val_loss_log, reg_loss_log, epoch)
+        t0 = default_timer()
+
+if __name__ == '__main__':
+    main()

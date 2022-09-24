@@ -48,7 +48,7 @@ class FileManager:
 
 
 class Data(Dataset):
-    def __init__(self, split_path, affine=None, paired=False, scheme=None):
+    def __init__(self, split_path, rounds=None, affine=None, paired=False, scheme=None):
         with open(split_path, 'r') as f:
             config = json.load(f)
         self.files = FileManager(config['files'])
@@ -77,8 +77,9 @@ class Data(Dataset):
         self.scheme = scheme
         if self.affine:
             affine_dct = self.config.get('affine_matrix', {})
+            assert len(self.schemes[scheme]) == 1
             self.affine_npy = [np.load(affine_dct[k], allow_pickle=True).item()
-                            for k in self.schemes[scheme].items() if k in affine_dct]
+                            for k in self.schemes[scheme].items() if k in affine_dct][0]
         
         # no fraction used
         if 'lits_d'==scheme:
@@ -90,6 +91,7 @@ class Data(Dataset):
                         for k, fraction in self.schemes[scheme].items()]
         # chain the data pairs
         self.data_pairs = [item for sublist in self.data_pairs for item in sublist]
+        self.rounds = rounds or len(self.data_pairs)
 
     def get_pairs(self, data, ordered=True):
         pairs = []
@@ -110,9 +112,11 @@ class Data(Dataset):
         return pairs
     
     def __len__(self):
-        return len(self.data_pairs)
+        return self.rounds
 
-    def __getitem__(self, index):
+    def __getitem__(self, idx):
+        index = idx % len(self.data_pairs)
+        item = self.data_pairs[index]
         d1, d2 = self.data_pairs[index]
         ret = {}
         ret['id1'] = d1['id']
@@ -120,10 +124,14 @@ class Data(Dataset):
         if self.affine:
             id1 = d1['id']
             id2 = d2['id']
-            total_matrix = self.affine_npy[index][id1][id2]
+            total_matrix = self.affine_npy[id1][id2]
             ret['affine_matrix'] = total_matrix
         ret['voxel1'] = d1['volume'][...]
         ret['voxel2'] = d2['volume'][...]
+        ret['segmentation1'] = np.zeros_like(ret['voxel1'])
+        ret['segmentation2'] = np.zeros_like(ret['voxel2'])
+        ret['point1'] = np.ones((6,3))*(-1)
+        ret['point2'] = np.ones((6,3))*(-1)
         if 'segmentation' in d1:
             ret['segmentation1'] = d1['segmentation'][...]
         if 'segmentation' in d2:
@@ -132,10 +140,18 @@ class Data(Dataset):
             ret['point1'] = d1['point'][...]
         if 'point' in d2:
             ret['point2'] = d2['point'][...]
+        # ret be np float
+        for k in ['voxel1', 'voxel2', 'segmentation1', 'segmentation2', 'point1', 'point2']:
+            ret[k] = ret[k][None].astype(np.float32)
+        # normalize voxel
+        ret['voxel1'] = ret['voxel1'] / 255.0
+        ret['voxel2'] = ret['voxel2'] / 255.0
         return ret
 
 if __name__ == '__main__':
     data = Data('/home/hynx/regis/Recursive-Cascaded-Networks/datasets/liver_cust.json', scheme=1)
     print(len(data))
-    print(data[0])
+    for k in data[0]:
+        if isinstance(data[0][k], np.ndarray):
+            print(k, data[0][k].shape)
 
