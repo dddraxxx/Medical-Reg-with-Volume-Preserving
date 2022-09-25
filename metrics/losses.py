@@ -59,10 +59,28 @@ def dice_loss(fixed_mask, warped):
 
     return 1 - dice
 
+def score_metrics(seg1: torch.Tensor, seg2: torch.Tensor):
+    seg1 = seg1.flatten(1)
+    seg2 = seg2.flatten(1)
+    intersection = (seg1 * seg2).sum(1)
+    union = seg1.sum(1) + seg2.sum(1)
+    dice = 2 * intersection / (union + 1e-6)
+    jaccard = intersection / (union - intersection + 1e-6)
+    return dice, jaccard
 
 def jacobian_det(flow):
-    raise NotImplementedError
-
+    """
+    flow has shape (batch, C, H, W, S)
+    """
+    # Compute Jacobian determinant
+    batch_size, _, height, width, depth = flow.size()
+    dx = flow[:, :, 1:, 1:, 1:] - flow[:, :, :-1, 1:, 1:] + 1
+    dy = flow[:, :, 1:, 1:, 1:] - flow[:, :, 1:, :-1, 1:] + 1
+    dz = flow[:, :, 1:, 1:, 1:] - flow[:, :, 1:, 1:, :-1] + 1
+    jac = torch.stack([dx, dy, dz], dim=1).permute(0, 3, 4, 5, 1, 2)
+    det = torch.det(jac)
+    # return variance of det
+    return torch.var(det, dim=[1, 2, 3])
 
 def total_loss(fixed, moving, flows):
     sim_loss = pearson_correlation(fixed, moving)

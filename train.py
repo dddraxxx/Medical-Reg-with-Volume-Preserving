@@ -8,13 +8,14 @@ from networks.recursive_cascade_networks import RecursiveCascadeNetwork
 from torch.optim import Adam
 from torch.optim.lr_scheduler import StepLR
 from torch.utils.data import DataLoader
-from metrics.losses import total_loss
+from metrics.losses import score_metrics, total_loss
 import matplotlib.pyplot as plt
 from matplotlib.collections import LineCollection
 import numpy as np
 import datetime as datetime
+from torch.utils.tensorboard import SummaryWriter
 
-from data_util.ctscan import sample_generator
+# from data_util.ctscan import sample_generator
 from data_util.dataset import Data, Split
 
 parser = argparse.ArgumentParser()
@@ -22,14 +23,15 @@ parser.add_argument('-b', "--batch_size", type=int, default=4)
 parser.add_argument('-n', "--n_cascades", type=int, default=5)
 parser.add_argument('-e', "--epochs", type=int, default=5)
 parser.add_argument("--round", type=int, default=20000)
-parser.add_argument("--val_steps", type=int, default=1000)
+parser.add_argument("-v", "--val_steps", type=int, default=1000)
 parser.add_argument('-cf', "--checkpoint_frequency", type=int, default=20)
 parser.add_argument('-c', "--checkpoint", type=str, default=None)
 parser.add_argument('--fixed_sample', type=int, default=100)
 parser.add_argument('-g', '--gpu', type=str, default='0', help='GPU to use')
 parser.add_argument('-d', '--dataset', type=str, default='datasets/liver_cust.json', help='Specifies a data config')
 parser.add_argument('--lr', type=float, default=1e-4)
-parser.add_argument('--debug', action='store_true')
+parser.add_argument('--debug', action='store_true', help="run the script without saving files")
+parser.add_argument('--name', type=str, default='')
 
 args = parser.parse_args()
 
@@ -117,11 +119,18 @@ def main():
     dt = datetime.datetime.now(tz=datetime.timezone(datetime.timedelta(hours=8)))
     run_id = dt.strftime('%b%d_%H%M%S')
 
+    # mkdirs for log
+    if not args.debug:
+        log_dir = os.path.join('./logs', run_id)
+        os.path.exists(log_dir) or os.makedirs(log_dir)
+        writer = SummaryWriter(log_dir=log_dir)
+
     # read config
     with open(args.dataset, 'r') as f:
         cfg = json.load(f)
         image_size = cfg.get('image_size', [128, 128, 128])
         image_type = cfg.get('image_type')
+        segmentation_class_value=cfg.get('segmentation_class_value', {'unknown':1})
 
     model = RecursiveCascadeNetwork(n_cascades=args.n_cascades, im_size=image_size)
     trainable_params = []
@@ -151,9 +160,9 @@ def main():
         train_epoch_loss = 0
         train_reg_loss = 0
         vis_batch = []
-        model.train()
         t0 = default_timer()
         for iteration, data in enumerate(train_loader):
+            model.train()
             iteration += 1
             t1 = default_timer()
             optim.zero_grad()
@@ -185,13 +194,19 @@ def main():
                                                                                          loss,
                                                                                          lr),
                           end='\n')
+                if not args.debug:
+                    writer.add_scalar('train/loss', loss, epoch * len(train_loader) + iteration)
+                    writer.add_scalar('train/reg', reg, epoch * len(train_loader) + iteration)
+                    writer.add_scalar('train/lr', lr, epoch * len(train_loader) + iteration)
+
                 if iteration%args.val_steps==0 or args.debug:
                     print(f">>>>> Validation <<<<<")
                     val_epoch_loss = 0
+                    dice_loss = {k:0 for k in segmentation_class_value.keys()}
+                    model.eval()
                     for iteration, data in enumerate(val_loader):
-                        if iteration % int(0.1 * len(val_loader)) == 0:
-                            print(f"\t-----Iteration {iteration} / {len(val_loader)} -----")
-
+                        # if iteration % int(0.1 * len(val_loader)) == 0:
+                        #     print(f"\t-----Iteration {iteration} / {len(val_loader)} -----")
                         with torch.no_grad():
                             fixed, moving = data['voxel1'], data['voxel2']
                             fixed = fixed.cuda()
@@ -200,17 +215,34 @@ def main():
                             sim, reg = total_loss(fixed, warped[-1], flows)
                             loss = sim + reg
                             val_epoch_loss += loss.item()
+                            # to do: add dice loss for each label
+                            for k,v in segmentation_class_value.items():
+                                seg1 = data['segmentation1'].cuda() > v-0.5
+                                seg2 = data['segmentation2'].cuda() > v-0.5
+                                w_seg2 = model.reconstruction(seg2.float(), flows[-1].float()) > 0.5
+                                dice, jac = score_metrics(seg1, w_seg2)
+                                dice_loss[k] += dice.mean().item()
+
                     mean_val_loss = val_epoch_loss / len(val_loader)
                     print(f"Mean val loss: {mean_val_loss}")
                     val_loss_log.append(mean_val_loss)
+                    mean_dice_loss = {}
+                    for k, v in dice_loss.items():
+                        mean_dc = v / len(val_loader)
+                        mean_dice_loss[k] = mean_dc
+                        print(f'Mean dice loss {k}: {mean_dc}')
+                    if not args.debug:
+                        writer.add_scalar('val/loss', mean_val_loss, epoch * len(train_loader) + iteration)
+                        for k in mean_dice_loss.keys():
+                            writer.add_scalar(f'val/dice_{k}', mean_dice_loss[k], epoch * len(train_loader) + iteration)
+            t0 = default_timer()
 
-        train_loss_log.append(train_epoch_loss / args.i)
-        reg_loss_log.append(train_reg_loss / args.i)
+        train_loss_log.append(train_epoch_loss / len(train_loader))
+        reg_loss_log.append(train_reg_loss / len(train_loader))
 
-        model.eval()
         scheduler.step()
 
-        if epoch % args.c == 0:
+        if epoch % args.checkpoint == 0:
             ckp = {}
             for i, submodel in enumerate(model.stems):
                 ckp[f"cascade {i}"] = submodel.state_dict()
@@ -222,7 +254,6 @@ def main():
             torch.save(ckp, f'./ckp/model_wts/epoch_{epoch}.pth')
 
         # generate_plots(vis_batch[0], vis_batch[1], vis_batch[2], vis_batch[3], train_loss_log, val_loss_log, reg_loss_log, epoch)
-        t0 = default_timer()
 
 if __name__ == '__main__':
     main()
