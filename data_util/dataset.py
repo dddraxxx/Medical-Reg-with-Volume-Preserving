@@ -116,7 +116,6 @@ class Data(Dataset):
 
     def __getitem__(self, idx):
         index = idx % len(self.data_pairs)
-        item = self.data_pairs[index]
         d1, d2 = self.data_pairs[index]
         ret = {}
         ret['id1'] = d1['id']

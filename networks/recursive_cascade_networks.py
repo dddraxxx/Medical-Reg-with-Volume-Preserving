@@ -1,27 +1,26 @@
 from .base_networks import *
 from .spatial_transformer import SpatialTransform
 
-
 class RecursiveCascadeNetwork(nn.Module):
     def __init__(self, n_cascades, im_size=(512, 512)):
         super(RecursiveCascadeNetwork, self).__init__()
 
         device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-        self.stems = []
+        self.stems = nn.ModuleList()
         # See note in base_networks.py about the assumption in the image shape
         self.stems.append(VTNAffineStem(dim=len(im_size), im_size=im_size[0]))
         for i in range(n_cascades):
             self.stems.append(VTN(dim=len(im_size), flow_multiplier=1.0 / n_cascades))
 
         # Parallelize across all available GPUs
-        if torch.cuda.device_count() > 1:
-            self.stems = [nn.DataParallel(model) for model in self.stems]
+        # if torch.cuda.device_count() > 1:
+        #     self.stems = [nn.DataParallel(model) for model in self.stems]
 
         for model in self.stems:
             model.to(device)
 
         self.reconstruction = SpatialTransform(im_size)
-        self.reconstruction = nn.DataParallel(self.reconstruction)
+        # self.reconstruction = nn.DataParallel(self.reconstruction)
         self.reconstruction.to(device)
 
     def forward(self, fixed, moving):
