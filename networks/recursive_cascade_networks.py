@@ -1,3 +1,4 @@
+from .transform import sample_power, free_form_fields
 from .base_networks import *
 from .spatial_transformer import SpatialTransform
 
@@ -37,4 +38,13 @@ class RecursiveCascadeNetwork(nn.Module):
             flows.append(flow)
 
         return stem_results, flows
+
+    def augment(self, img2: torch.Tensor, seg2: torch.Tensor):
+        bs, c, h, w, s = img2.shape
+        control_fields = sample_power(-.4, .4, 3, (bs, 3, 5, 5, 5)).to(img2.device) * (img2.new_tensor([h, w, s])//4)[..., None, None, None]
+        aug_flow = free_form_fields((h, w, s), control_fields)
+        aug_img2 = self.reconstruction(img2, aug_flow)
+        aug_seg2 = self.reconstruction(seg2, aug_flow)
+        return aug_img2, aug_seg2
+
 
