@@ -8,7 +8,7 @@ from networks.recursive_cascade_networks import RecursiveCascadeNetwork
 from torch.optim import Adam
 from torch.optim.lr_scheduler import StepLR
 from torch.utils.data import DataLoader
-from metrics.losses import score_metrics, total_loss
+from metrics.losses import det_loss, ortho_loss, reg_loss, score_metrics, sim_loss
 import matplotlib.pyplot as plt
 from matplotlib.collections import LineCollection
 import numpy as np
@@ -21,10 +21,10 @@ from torch.nn.parallel import DistributedDataParallel as DDP
 
 parser = argparse.ArgumentParser()
 parser.add_argument('-b', "--batch_size", type=int, default=4)
-parser.add_argument('-n', "--n_cascades", type=int, default=5)
+parser.add_argument('-n', "--n_cascades", type=int, default=3)
 parser.add_argument('-e', "--epochs", type=int, default=5)
 parser.add_argument("--round", type=int, default=20000)
-parser.add_argument("-v", "--val_steps", type=int, default=1000)
+parser.add_argument("-v", "--val_steps", type=int, default=400)
 parser.add_argument('-cf', "--checkpoint_frequency", type=int, default=20)
 parser.add_argument('-c', "--checkpoint", type=str, default=None)
 parser.add_argument('--fixed_sample', type=int, default=100)
@@ -55,11 +55,11 @@ def main():
         local_rank = 0
     # Hong Kong time
     dt = datetime.datetime.now(tz=datetime.timezone(datetime.timedelta(hours=8)))
-    run_id = dt.strftime('%b%d_%H%M%S') + '_' + args.name
+    run_id = dt.strftime('%b%d_%H%M%S') + (args.name and '_' + args.name)
 
-    if not os.path.exists('./ckp/model_wts/'+run_id):
+    if not os.path.exists('./ckp/model_wts/'):
         print("Creating ckp dir")
-        os.makedirs('./ckp/model_wts/'+run_id)
+        os.makedirs('./ckp/model_wts/')
 
     if not os.path.exists('./ckp/visualization'):
         print("Creating visualization dir")
@@ -99,9 +99,10 @@ def main():
 
     if dist.is_initialized():
         train_sampler = torch.utils.data.distributed.DistributedSampler(train_dataset, shuffle=True)
+        train_loader = DataLoader(train_dataset, batch_size=args.batch_size, num_workers=4, sampler=train_sampler)
     else:
-        train_sampler = torch.utils.data.RandomSampler(train_dataset)
-    train_loader = DataLoader(train_dataset, batch_size=args.batch_size, num_workers=4, sampler=train_sampler)
+        # train_sampler = torch.utils.data.RandomSampler(train_dataset)
+        train_loader = DataLoader(train_dataset, batch_size=args.batch_size, num_workers=4, shuffle=True)
     # val_sampler = torch.utils.data.distributed.DistributedSampler(val_dataset, shuffle=False)
     val_loader = DataLoader(val_dataset, batch_size=args.batch_size, num_workers=4, shuffle=False)
 
@@ -109,9 +110,9 @@ def main():
     train_loss_log = []
     reg_loss_log = []
     val_loss_log = []
-
-    for epoch in range(1, args.epochs + 1):
-        print(f"-----Epoch {epoch} / {args.epochs}-----")
+    max_seg = max(segmentation_class_value.values())
+    for epoch in range(0, args.epochs):
+        print(f"-----Epoch {epoch+1} / {args.epochs}-----")
         train_epoch_loss = 0
         train_reg_loss = 0
         vis_batch = []
@@ -126,12 +127,29 @@ def main():
             moving = moving.cuda()
 
             # do some augmentation
-            aug_moving, aug_seg2 = model.augment(moving, data['segmentation2'].cuda())
-            warped, flows = model(fixed, aug_moving)
-            loss, reg = total_loss(fixed, warped[-1], flows)
+            seg1 = data['segmentation1'].cuda()
+            moving, seg2 = model.augment(moving, data['segmentation2'].cuda())
+            warped, flows, agg_flows, affine_params = model(fixed, moving, return_affine=True)
+
+            # affine loss
+            ortho_factor, det_factor = 0.1, 0.1
+            A = affine_params['theta'][..., :3, :3]
+            ort = ortho_factor * ortho_loss(A)
+            det = det_factor * det_loss(A)
+            # sim and reg loss
+            sim, reg = sim_loss(fixed, warped[-1]), reg_loss(flows[1:])
+            loss = sim+reg+det+ort
+            loss_dict = {
+                'sim_loss': sim.item(),
+                'reg_loss': reg.item(),
+                'ortho_loss': ort.item(),
+                'det_loss': det.item(),
+                'loss': loss.item()
+            }
             loss.backward()
             optim.step()
-            loss, reg = reduce_mean(loss), reduce_mean(reg)
+            # to do: ddp reduce of loss
+            loss, sim, reg = reduce_mean(loss), reduce_mean(sim), reduce_mean(reg)
 
             train_epoch_loss = train_epoch_loss + loss.item()
             train_reg_loss = train_reg_loss + reg.item()
@@ -152,9 +170,21 @@ def main():
                                                                                          loss,
                                                                                          lr),
                           end='\n')
+                    if not args.debug:
+                        writer.add_image('train/img1', fixed[0, :, 64], epoch * len(train_loader) + iteration)
+                        writer.add_image('train/img2', moving[0, :, 64], epoch * len(train_loader) + iteration)
+                        writer.add_image('train/warped', warped[-1][0, :, 64], epoch * len(train_loader) + iteration)
+                        writer.add_image('train/seg1', seg1[0, :, 64]/max_seg, epoch * len(train_loader) + iteration)
+                        writer.add_image('train/seg2', seg2[0, :, 64]/max_seg, epoch * len(train_loader) + iteration)
+
+                        writer.add_image('train/affine_warpd', warped[0][0, :, 64], epoch * len(train_loader) + iteration)
+                        with torch.no_grad():
+                            w_seg2 = mmodel.reconstruction(seg2, agg_flows[-1])
+                        writer.add_image('train/w_seg2', w_seg2[0, :, 64]/max_seg, epoch * len(train_loader) + iteration)
+
                 if not args.debug:
-                    writer.add_scalar('train/loss', loss, epoch * len(train_loader) + iteration)
-                    writer.add_scalar('train/reg', reg, epoch * len(train_loader) + iteration)
+                    for k in loss_dict:
+                        writer.add_scalar('train/'+k, loss_dict[k], epoch * len(train_loader) + iteration)
                     writer.add_scalar('train/lr', lr, epoch * len(train_loader) + iteration)
 
                 if iteration%args.val_steps==0 or args.debug:
@@ -162,24 +192,32 @@ def main():
                     val_epoch_loss = 0
                     dice_loss = {k:0 for k in segmentation_class_value.keys()}
                     model.eval()
-                    for iteration, data in enumerate(val_loader):
-                        if iteration % int(0.33 * len(val_loader)) == 0:
-                            print(f"\t-----Iteration {iteration} / {len(val_loader)} -----")
+                    tb_imgs = {}
+                    for itern, data in enumerate(val_loader):
+                        itern += 1
+                        if itern % int(0.33 * len(val_loader)) == 0:
+                            print(f"\t-----Iteration {itern} / {len(val_loader)} -----")
                         with torch.no_grad():
                             fixed, moving = data['voxel1'], data['voxel2']
                             fixed = fixed.cuda()
                             moving = moving.cuda()
-                            warped, flows = mmodel(fixed, moving)
-                            sim, reg = total_loss(fixed, warped[-1], flows)
+                            warped, flows, agg_flows = mmodel(fixed, moving)
+                            sim, reg = sim_loss(fixed, warped[-1]), reg_loss(flows[1:])
                             loss = sim + reg
                             val_epoch_loss += loss.item()
-                            # to do: add dice loss for each label
                             for k,v in segmentation_class_value.items():
                                 seg1 = data['segmentation1'].cuda() > v-0.5
                                 seg2 = data['segmentation2'].cuda() > v-0.5
-                                w_seg2 = mmodel.reconstruction(seg2.float(), flows[-1].float()) > 0.5
+                                w_seg2 = mmodel.reconstruction(seg2.float(), agg_flows[-1].float()) > 0.5
                                 dice, jac = score_metrics(seg1, w_seg2)
                                 dice_loss[k] += dice.mean().item()
+                    tb_imgs['img1'] = fixed
+                    tb_imgs['img2'] = moving
+                    tb_imgs['warped'] = warped[-1]
+                    with torch.no_grad():
+                        tb_imgs['seg1'] = data['segmentation1'].cuda()
+                        tb_imgs['seg2'] = data['segmentation2'].cuda()
+                        tb_imgs['w_seg2'] = mmodel.reconstruction(tb_imgs['seg2'], agg_flows[-1].float())
 
                     mean_val_loss = val_epoch_loss / len(val_loader)
                     print(f"Mean val loss: {mean_val_loss}")
@@ -193,6 +231,13 @@ def main():
                         writer.add_scalar('val/loss', mean_val_loss, epoch * len(train_loader) + iteration)
                         for k in mean_dice_loss.keys():
                             writer.add_scalar(f'val/dice_{k}', mean_dice_loss[k], epoch * len(train_loader) + iteration)
+                        # add img1, img2, seg1, seg2, warped, w_seg2
+                        writer.add_image('val/img1', tb_imgs['img1'][0,:,64], epoch * len(train_loader) + iteration)
+                        writer.add_image('val/img2', tb_imgs['img2'][0,:,64], epoch * len(train_loader) + iteration)
+                        writer.add_image('val/seg1', tb_imgs['seg1'][0,:,64]/max_seg, epoch * len(train_loader) + iteration)
+                        writer.add_image('val/seg2', tb_imgs['seg2'][0,:,64]/max_seg, epoch * len(train_loader) + iteration)
+                        writer.add_image('val/warped', tb_imgs['warped'][0,:,64], epoch * len(train_loader) + iteration)
+                        writer.add_image('val/w_seg2', tb_imgs['w_seg2'][0,:,64]/max_seg, epoch * len(train_loader) + iteration)
             t0 = default_timer()
 
         train_loss_log.append(train_epoch_loss / len(train_loader))
@@ -201,6 +246,8 @@ def main():
         scheduler.step()
 
         if local_rank==0 and epoch % args.checkpoint_frequecy == 0:
+            if not args.debug and not os.path.exists('./ckp/model_wts/'+run_id):
+                os.makedirs('./ckp/model_wts/'+run_id)
             ckp = {}
             for i, submodel in enumerate(mmodel.stems):
                 ckp[f"cascade {i}"] = submodel.state_dict()

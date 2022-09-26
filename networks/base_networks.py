@@ -204,7 +204,7 @@ class VTNAffineStem(nn.Module):
         else:
              flow = flow.permute(0, 4, 1, 2, 3)
 
-        return flow
+        return flow, {'theta': theta}
 
 
 if __name__ == "__main__":

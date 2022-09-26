@@ -24,20 +24,30 @@ class RecursiveCascadeNetwork(nn.Module):
         # self.reconstruction = nn.DataParallel(self.reconstruction)
         self.reconstruction.to(device)
 
-    def forward(self, fixed, moving):
+    def forward(self, fixed, moving, return_affine=False):
         flows = []
         stem_results = []
+        agg_flows = []
         # Affine registration
-        flow = self.stems[0](fixed, moving)
+        flow, affine_params = self.stems[0](fixed, moving)
         stem_results.append(self.reconstruction(moving, flow))
         flows.append(flow)
+        agg_flows.append(flow)
         for model in self.stems[1:]: # cascades
             # registration between the fixed and the warped from last cascade
             flow = model(fixed, stem_results[-1])
-            stem_results.append(self.reconstruction(stem_results[-1], flow))
             flows.append(flow)
-
-        return stem_results, flows
+            if len(agg_flows) == 1:
+                theta = affine_params['theta']
+                A = theta[:, :3, :3]
+                agg_flow = flows[0] + torch.einsum('bij, bjxyz -> bixyz', A, flow)
+            else:
+                agg_flow = self.reconstruction(agg_flows[-1], flow) + flow
+            agg_flows.append(agg_flow)
+            stem_results.append(self.reconstruction(moving, agg_flow))
+        if return_affine:
+            return stem_results, flows, agg_flows, affine_params
+        return stem_results, flows, agg_flows
 
     def augment(self, img2: torch.Tensor, seg2: torch.Tensor):
         bs, c, h, w, s = img2.shape
