@@ -25,7 +25,7 @@ parser.add_argument('-n', "--n_cascades", type=int, default=3)
 parser.add_argument('-e', "--epochs", type=int, default=5)
 parser.add_argument("--round", type=int, default=20000)
 parser.add_argument("-v", "--val_steps", type=int, default=400)
-parser.add_argument('-cf', "--checkpoint_frequency", type=int, default=20)
+parser.add_argument('-cf', "--checkpoint_frequency", default=0.5, type=float)
 parser.add_argument('-c', "--checkpoint", type=str, default=None)
 parser.add_argument('--fixed_sample', type=int, default=100)
 parser.add_argument('-g', '--gpu', type=str, default='', help='GPU to use')
@@ -60,6 +60,7 @@ def main():
     if not os.path.exists('./ckp/model_wts/'):
         print("Creating ckp dir")
         os.makedirs('./ckp/model_wts/')
+    ckp_freq = int(args.checkpoint_frequency * args.round)
 
     if not os.path.exists('./ckp/visualization'):
         print("Creating visualization dir")
@@ -139,6 +140,11 @@ def main():
             # sim and reg loss
             sim, reg = sim_loss(fixed, warped[-1]), reg_loss(flows[1:])
             loss = sim+reg+det+ort
+            loss.backward()
+            optim.step()
+            # ddp reduce of loss
+            loss, sim, reg = reduce_mean(loss), reduce_mean(sim), reduce_mean(reg)
+            ort, det = reduce_mean(ort), reduce_mean(det)
             loss_dict = {
                 'sim_loss': sim.item(),
                 'reg_loss': reg.item(),
@@ -146,10 +152,6 @@ def main():
                 'det_loss': det.item(),
                 'loss': loss.item()
             }
-            loss.backward()
-            optim.step()
-            # to do: ddp reduce of loss
-            loss, sim, reg = reduce_mean(loss), reduce_mean(sim), reduce_mean(reg)
 
             train_epoch_loss = train_epoch_loss + loss.item()
             train_reg_loss = train_reg_loss + reg.item()
@@ -238,26 +240,25 @@ def main():
                         writer.add_image('val/seg2', tb_imgs['seg2'][0,:,64]/max_seg, epoch * len(train_loader) + iteration)
                         writer.add_image('val/warped', tb_imgs['warped'][0,:,64], epoch * len(train_loader) + iteration)
                         writer.add_image('val/w_seg2', tb_imgs['w_seg2'][0,:,64]/max_seg, epoch * len(train_loader) + iteration)
-            t0 = default_timer()
 
-        train_loss_log.append(train_epoch_loss / len(train_loader))
-        reg_loss_log.append(train_reg_loss / len(train_loader))
+            if local_rank==0 and iteration % ckp_freq == 0:
+                if not args.debug and not os.path.exists('./ckp/model_wts/'+run_id):
+                    os.makedirs('./ckp/model_wts/'+run_id)
+                
+                train_loss_log.append(train_epoch_loss / iteration)
+                reg_loss_log.append(train_reg_loss / iteration)
 
+                ckp = {}
+                ckp['stem_state_dict'] = mmodel.stems.state_dict()
+
+                ckp['train_loss'] = train_loss_log
+                ckp['val_loss'] = val_loss_log
+                ckp['epoch'] = epoch
+
+                torch.save(ckp, f'./ckp/model_wts/{run_id}/epoch_{epoch}_iter_{iteration}.pth')
+
+            t0 = default_timer()   
         scheduler.step()
-
-        if local_rank==0 and epoch % args.checkpoint_frequecy == 0:
-            if not args.debug and not os.path.exists('./ckp/model_wts/'+run_id):
-                os.makedirs('./ckp/model_wts/'+run_id)
-            ckp = {}
-            for i, submodel in enumerate(mmodel.stems):
-                ckp[f"cascade {i}"] = submodel.state_dict()
-
-            ckp['train_loss'] = train_loss_log
-            ckp['val_loss'] = val_loss_log
-            ckp['epoch'] = epoch
-
-            torch.save(ckp, f'./ckp/model_wts/{run_id}/epoch_{epoch}.pth')
-
         # generate_plots(vis_batch[0], vis_batch[1], vis_batch[2], vis_batch[3], train_loss_log, val_loss_log, reg_loss_log, epoch)
 
 if __name__ == '__main__':

@@ -24,6 +24,24 @@ class RecursiveCascadeNetwork(nn.Module):
         # self.reconstruction = nn.DataParallel(self.reconstruction)
         self.reconstruction.to(device)
 
+        # add initialization
+        for module in self.modules():
+            if isinstance(module, nn.Conv2d) or isinstance(module, nn.Conv3d):
+                torch.nn.init.xavier_uniform_(module.weight)
+                if module.bias is not None:
+                    torch.nn.init.zeros_(module.bias)
+            elif isinstance(module, nn.BatchNorm2d) or isinstance(module, nn.BatchNorm3d):
+                torch.nn.init.ones_(module.weight)
+                torch.nn.init.zeros_(module.bias)
+            # affine init fc[-1]
+            # elif isinstance(module, nn.Linear):
+            #     torch.nn.init.xavier_uniform_(module.weight)
+            #     torch.nn.init.zeros_(module.bias)
+            elif isinstance(module, nn.ConvTranspose2d) or isinstance(module, nn.ConvTranspose3d):
+                torch.nn.init.xavier_uniform_(module.weight)
+                if module.bias is not None:
+                    torch.nn.init.zeros_(module.bias)
+
     def forward(self, fixed, moving, return_affine=False):
         flows = []
         stem_results = []
