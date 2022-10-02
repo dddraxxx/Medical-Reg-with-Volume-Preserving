@@ -9,9 +9,6 @@ from torch.optim import Adam
 from torch.optim.lr_scheduler import StepLR
 from torch.utils.data import DataLoader
 from metrics.losses import det_loss, ortho_loss, reg_loss, score_metrics, sim_loss
-import matplotlib.pyplot as plt
-from matplotlib.collections import LineCollection
-import numpy as np
 import datetime as datetime
 from torch.utils.tensorboard import SummaryWriter
 # from data_util.ctscan import sample_generator
@@ -24,7 +21,7 @@ parser.add_argument('-b', "--batch_size", type=int, default=4)
 parser.add_argument('-n', "--n_cascades", type=int, default=3)
 parser.add_argument('-e', "--epochs", type=int, default=5)
 parser.add_argument("--round", type=int, default=20000)
-parser.add_argument("-v", "--val_steps", type=int, default=400)
+parser.add_argument("-v", "--val_steps", type=int, default=1000)
 parser.add_argument('-cf', "--checkpoint_frequency", default=0.5, type=float)
 parser.add_argument('-c', "--checkpoint", type=str, default=None)
 parser.add_argument('--fixed_sample', type=int, default=100)
@@ -80,6 +77,10 @@ def main():
         segmentation_class_value=cfg.get('segmentation_class_value', {'unknown':1})
 
     model = RecursiveCascadeNetwork(n_cascades=args.n_cascades, im_size=image_size).cuda()
+    # add checkpoint loading
+    if args.checkpoint:
+        print("Loading checkpoint from {}".format(args.checkpoint))
+        model.load_state_dict(torch.load(args.checkpoint))
     if dist.is_initialized():
         model = DDP(model, device_ids=[local_rank], output_device=local_rank)
         mmodel = model.module
@@ -98,14 +99,15 @@ def main():
     train_dataset = Data(args.dataset, rounds=args.round*args.batch_size, scheme=Split.TRAIN)
     val_dataset = Data(args.dataset, scheme=Split.VALID)
 
+    num_worker = min(8, args.batch_size)
     if dist.is_initialized():
         train_sampler = torch.utils.data.distributed.DistributedSampler(train_dataset, shuffle=True)
-        train_loader = DataLoader(train_dataset, batch_size=args.batch_size, num_workers=4, sampler=train_sampler)
+        train_loader = DataLoader(train_dataset, batch_size=args.batch_size, num_workers=num_worker, sampler=train_sampler)
     else:
         # train_sampler = torch.utils.data.RandomSampler(train_dataset)
-        train_loader = DataLoader(train_dataset, batch_size=args.batch_size, num_workers=4, shuffle=True)
+        train_loader = DataLoader(train_dataset, batch_size=args.batch_size, num_workers=num_worker, shuffle=True)
     # val_sampler = torch.utils.data.distributed.DistributedSampler(val_dataset, shuffle=False)
-    val_loader = DataLoader(val_dataset, batch_size=args.batch_size, num_workers=4, shuffle=False)
+    val_loader = DataLoader(val_dataset, batch_size=args.batch_size, num_workers=num_worker, shuffle=False)
 
     # Saving the losses
     train_loss_log = []
@@ -165,7 +167,7 @@ def main():
                 if iteration<500 or iteration % 500 == 0:
                     print('*%s* ' % run_id,
                           time.strftime('%Y-%m-%d %H:%M:%S', time.localtime()),
-                          'Steps %d, Total time %.2f, data %.2f%%. Loss %.3e lr %.3e' % (iteration,
+                          'Epoch %d Steps %d, Total time %.2f, data %.2f%%. Loss %.3e lr %.3e' % (epoch, iteration,
                                                                                          default_timer() - t0,
                                                                                          (t1 - t0) / (
                                                                                              default_timer() - t0),

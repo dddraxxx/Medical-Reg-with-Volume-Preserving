@@ -1,3 +1,7 @@
+import matplotlib.pyplot as plt
+from matplotlib.collections import LineCollection
+import numpy as np
+
 def identify_axes(ax_dict, fontsize=48):
     kw = dict(ha="center", va="center", fontsize=fontsize, color="darkgrey")
     for k, ax in ax_dict.items():
