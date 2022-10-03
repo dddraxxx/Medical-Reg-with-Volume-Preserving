@@ -8,7 +8,7 @@ from networks.recursive_cascade_networks import RecursiveCascadeNetwork
 from torch.optim import Adam
 from torch.optim.lr_scheduler import StepLR
 from torch.utils.data import DataLoader
-from metrics.losses import det_loss, ortho_loss, reg_loss, score_metrics, sim_loss
+from metrics.losses import det_loss, masked_sim_loss, ortho_loss, reg_loss, score_metrics, sim_loss
 import datetime as datetime
 from torch.utils.tensorboard import SummaryWriter
 # from data_util.ctscan import sample_generator
@@ -30,6 +30,7 @@ parser.add_argument('-d', '--dataset', type=str, default='datasets/liver_cust.js
 parser.add_argument('--lr', type=float, default=1e-4)
 parser.add_argument('--debug', action='store_true', help="run the script without saving files")
 parser.add_argument('--name', type=str, default='')
+parser.add_argument('-m', '--masked', action='store_true', help="mask the tumor part when calculating similarity loss")
 args = parser.parse_args()
 if args.gpu:
     os.environ["CUDA_VISIBLE_DEVICES"] = args.gpu
@@ -140,7 +141,18 @@ def main():
             ort = ortho_factor * ortho_loss(A)
             det = det_factor * det_loss(A)
             # sim and reg loss
-            sim, reg = sim_loss(fixed, warped[-1]), reg_loss(flows[1:])
+            if not args.masked:
+                sim = sim_loss(fixed, warped[-1])
+            else:
+                # caluculate mask
+                t_seg2 = seg2==2
+                # need torch no grad?
+                with torch.no_grad():
+                    warped_tseg = mmodel.reconstruction(t_seg2.float(), agg_flows[-1])
+                mask = (warped_tseg > 0.5) | (seg1==2)
+                assert mask.requires_grad == False
+                sim = masked_sim_loss(fixed, warped[-1], mask)
+            reg = reg_loss(flows[1:])
             loss = sim+reg+det+ort
             loss.backward()
             optim.step()

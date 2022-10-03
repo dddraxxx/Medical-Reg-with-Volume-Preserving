@@ -109,6 +109,22 @@ def sim_loss(fixed, moving):
     sim_loss = pearson_correlation(fixed, moving)
     return sim_loss
 
+def masked_sim_loss(fixed, moving, mask):
+    flatten_fixed = torch.flatten(fixed, start_dim=1)
+    flatten_warped = torch.flatten(moving, start_dim=1)
+    flatten_mask = torch.flatten(mask, start_dim=1)
+    # get masked mean: non-masked sum / non-masked count
+    flatten_fixed[flatten_mask] = 0
+    flatten_warped[flatten_mask] = 0
+    fixed_mean = flatten_fixed.sum(1) / (flatten_mask.shape[1] - flatten_mask.sum(1))
+    warped_mean = flatten_warped.sum(1) / (flatten_mask.shape[1] - flatten_mask.sum(1))
+    # replace masked values with masked mean
+    flatten_fixed = torch.where(flatten_mask, fixed_mean[:, None], flatten_fixed)
+    flatten_warped = torch.where(flatten_mask, warped_mean[:, None], flatten_warped)
+    # calculate pearson correlation
+    sim_loss = pearson_correlation(flatten_fixed, flatten_warped)
+    return sim_loss
+
 def reg_loss(flows):
     if len(flows[0].size()) == 4: #(N, C, H, W)
         reg_loss = sum([regularize_loss(flow) for flow in flows])
