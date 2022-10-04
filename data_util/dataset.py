@@ -108,7 +108,7 @@ class Data(Dataset):
             for v in dct[k]['id2']:
                 i2 = dict(dct[k]['id2'][v])
                 i2['id'] = v
-                pairs.append(dct[k], i2)
+                pairs.append((dct[k], i2))
         return pairs
     
     def __len__(self):

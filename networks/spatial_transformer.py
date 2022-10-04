@@ -18,7 +18,7 @@ class SpatialTransform(nn.Module):
         grid = grid.type(torch.FloatTensor)
         self.register_buffer('grid', grid)
 
-    def forward(self, src, flow):
+    def forward(self, src, flow, mode='bilinear'):
         new_locs = self.grid + flow
 
         shape = flow.shape[2:]
@@ -33,4 +33,4 @@ class SpatialTransform(nn.Module):
             new_locs = new_locs.permute(0, 2, 3, 4, 1)
             new_locs = new_locs[..., [2, 1, 0]]
 
-        return F.grid_sample(src, new_locs, mode='bilinear', align_corners=False)
+        return F.grid_sample(src, new_locs, mode=mode, align_corners=False)

@@ -28,6 +28,7 @@ parser.add_argument('--batch_size', type=int, default=4, help='Size of minibatch
 parser.add_argument('--data_args', type=str, default=None)
 parser.add_argument('--net_args', type=str, default=None)
 parser.add_argument('--name', type=str, default=None)
+parser.add_argument('-s','--save_pkl', action='store_true', help='Save the results as a pkl file')
 args = parser.parse_args()
 
 if args.gpu:
@@ -64,7 +65,7 @@ def main():
         load_model(torch.load(model_path), model)
     
     # parent of model path
-    output_fname = './evaluations/{}_{}_{}.txt'.format(os.path.dirname(model_path).split('/')[-1], args.val_subset, args.name or '')
+    output_fname = './evaluations/{}_{}_{}.txt'.format(os.path.dirname(model_path).split('/')[-1], args.val_subset or Split.VALID, args.name or '')
     print('Saving to {}'.format(output_fname))
     # create dir
     os.makedirs(os.path.dirname(output_fname), exist_ok=True)
@@ -73,6 +74,9 @@ def main():
     model.eval()
     results = {}
     results['id1'], results['id2'], results['dices'] = [], [], []
+    if args.save_pkl:
+        results['agg_flows'] = []
+        results['affine_params'] = []
     for iteration, data in tqdm(enumerate(val_loader)):
         fixed, moving = data['voxel1'], data['voxel2']
         id1, id2 = data['id1'], data['id2']
@@ -80,6 +84,10 @@ def main():
         moving = moving.cuda()
         warped, flows, agg_flows, affine_params = model(fixed, moving, return_affine=True)
         
+        if args.save_pkl:
+            magg_flows = torch.stack(agg_flows).transpose(0,1).detach().cpu()
+            results['agg_flows'].extend(magg_flows)
+            results['affine_params'].extend(affine_params['theta'].detach().cpu())
         # metrics: dice
         results['id1'].extend(id1)
         results['id2'].extend(id2)
@@ -110,9 +118,10 @@ def main():
         for dice_k in keys:
             print("{}: {} ({})".format(dice_k, np.mean(results[dice_k]), np.std(results[dice_k])), file=fo)
 
-    # with open(path_prefix + '.pkl', 'wb') as f:
-    #     pickle.dump(results, f)
-    # print('finish saving pkl')
+    if args.save_pkl:
+        with open(output_fname.replace('.txt', '.pkl'), 'wb') as fo:
+            pickle.dump(results, fo)
+        print('finish saving pkl')
 
 if __name__ == '__main__':
     main()

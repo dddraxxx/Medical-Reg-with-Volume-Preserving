@@ -1,3 +1,7 @@
 *.pyc
 logs/*
 *.pth
+evaluations/*
+*_trial.py
+*.png
+*.jpg
