@@ -149,21 +149,21 @@ class VTNAffineStem(nn.Module):
 
         # I'm assuming that the image's shape is like (im_size, im_size, im_size)
         self.last_conv_size = im_size // (self.channels * 4)
-        # self.fc_loc = nn.Sequential(
-        #     nn.Linear(512 * self.last_conv_size**dim, 2048),
-        #     nn.ReLU(True),
-        #     nn.Dropout(0.5),
-        #     nn.Linear(2048, 1024),
-        #     nn.ReLU(True),
-        #     nn.Dropout(0.5),
-        #     nn.Linear(1024, 256),
-        #     nn.ReLU(True),
-        #     nn.Dropout(0.5),
-        #     nn.Linear(256, 6*(dim - 1))
-        # )
         self.fc_loc = nn.Sequential(
-            nn.Linear(512 * channels * self.last_conv_size**dim, 6*(dim - 1)),
+            nn.Linear(512 * self.last_conv_size**dim, 2048),
+            nn.ReLU(True),
+            nn.Dropout(0.5),
+            nn.Linear(2048, 1024),
+            nn.ReLU(True),
+            nn.Dropout(0.5),
+            nn.Linear(1024, 256),
+            nn.ReLU(True),
+            nn.Dropout(0.5),
+            nn.Linear(256, 6*(dim - 1))
         )
+        # self.fc_loc = nn.Sequential(
+        #     nn.Linear(512 * channels * self.last_conv_size**dim, 6*(dim - 1)),
+        # )
         # Initialize the weights/bias with identity transformation
         self.fc_loc[-1].weight.data.zero_()
         """

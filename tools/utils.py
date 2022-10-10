@@ -81,3 +81,13 @@ def show_img(res):
     # normalize res
     res = (res-res.min())/(res.max()-res.min())
     return T.ToPILImage()(res)
+
+from PIL import Image
+def combine_pil_img(*ims):
+    widths, heights = zip(*(i.size for i in ims))
+    total_width = sum(widths) + 5*(len(ims)-1)
+    total_height = max(heights)
+    im = Image.new('RGB', (total_width, total_height), color='white')
+    for i, im_ in enumerate(ims):
+        im.paste(im_, (sum(widths[:i])+5*i, 0))
+    return im
