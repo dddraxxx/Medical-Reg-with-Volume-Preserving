@@ -1,7 +1,7 @@
 import torch
 
 
-def pearson_correlation(fixed, warped):
+def pearson_correlation(fixed, warped, soft_mask = None):
     flatten_fixed = torch.flatten(fixed, start_dim=1)
     flatten_warped = torch.flatten(warped, start_dim=1)
 
@@ -10,7 +10,11 @@ def pearson_correlation(fixed, warped):
     var1 = torch.mean((flatten_fixed - mean1) ** 2, dim=1, keepdim=True)
     var2 = torch.mean((flatten_warped - mean2) ** 2, dim=1, keepdim=True)
 
-    cov12 = torch.mean((flatten_fixed - mean1) * (flatten_warped - mean2), dim=1, keepdim=True)
+    if soft_mask is not None:
+        soft_mask = torch.flatten(soft_mask, start_dim=1)
+    else:
+        soft_mask = 1
+    cov12 = torch.mean((flatten_fixed - mean1) * (flatten_warped - mean2) * soft_mask, dim=1, keepdim=True)
     eps = 1e-6
     pearson_r = cov12 / torch.sqrt((var1 + eps) * (var2 + eps))
 
@@ -69,7 +73,7 @@ def score_metrics(seg1: torch.Tensor, seg2: torch.Tensor):
     jaccard = intersection / (union - intersection + 1e-6)
     return dice, jaccard
 
-def jacobian_det(flow):
+def jacobian_det(flow, return_det=False):
     """
     flow has shape (batch, C, H, W, S)
     """
@@ -80,6 +84,8 @@ def jacobian_det(flow):
     dz = flow[:, :, 1:, 1:, 1:] - flow[:, :, 1:, 1:, :-1] + 1
     jac = torch.stack([dx, dy, dz], dim=1).permute(0, 3, 4, 5, 1, 2)
     det = torch.det(jac)
+    if return_det:
+        return det
     # return variance of det
     return torch.var(det, dim=[1, 2, 3])
 
@@ -105,11 +111,11 @@ def det_loss(A):
     # l2 loss
     return torch.sum(0.5 * (det - 1) ** 2)
 
-def sim_loss(fixed, moving):
-    sim_loss = pearson_correlation(fixed, moving)
+def sim_loss(fixed, moving, soft_mask=None):
+    sim_loss = pearson_correlation(fixed, moving, soft_mask)
     return sim_loss
 
-def masked_sim_loss(fixed, moving, mask):
+def masked_sim_loss(fixed, moving, mask, soft_mask=None):
     flatten_fixed = torch.flatten(fixed, start_dim=1)
     flatten_warped = torch.flatten(moving, start_dim=1)
     flatten_mask = torch.flatten(mask, start_dim=1)
@@ -122,7 +128,7 @@ def masked_sim_loss(fixed, moving, mask):
     flatten_fixed = torch.where(flatten_mask, fixed_mean[:, None], flatten_fixed)
     flatten_warped = torch.where(flatten_mask, warped_mean[:, None], flatten_warped)
     # calculate pearson correlation
-    sim_loss = pearson_correlation(flatten_fixed, flatten_warped)
+    sim_loss = pearson_correlation(flatten_fixed, flatten_warped, soft_mask)
     return sim_loss
 
 def reg_loss(flows):

@@ -4,11 +4,12 @@ import argparse
 import os
 import time
 import torch
+from torch.functional import F
 from networks.recursive_cascade_networks import RecursiveCascadeNetwork
 from torch.optim import Adam
 from torch.optim.lr_scheduler import StepLR
 from torch.utils.data import DataLoader
-from metrics.losses import det_loss, masked_sim_loss, ortho_loss, reg_loss, score_metrics, sim_loss
+from metrics.losses import det_loss, jacobian_det, masked_sim_loss, ortho_loss, reg_loss, score_metrics, sim_loss
 import datetime as datetime
 from torch.utils.tensorboard import SummaryWriter
 # from data_util.ctscan import sample_generator
@@ -30,7 +31,8 @@ parser.add_argument('-d', '--dataset', type=str, default='datasets/liver_cust.js
 parser.add_argument('--lr', type=float, default=1e-4)
 parser.add_argument('--debug', action='store_true', help="run the script without saving files")
 parser.add_argument('--name', type=str, default='')
-parser.add_argument('-m', '--masked', action='store_true', help="mask the tumor part when calculating similarity loss")
+parser.add_argument('-m', '--masked', choices=['soft', 'seg'], default='',
+     help="mask the tumor part when calculating similarity loss")
 args = parser.parse_args()
 if args.gpu:
     os.environ["CUDA_VISIBLE_DEVICES"] = args.gpu
@@ -146,12 +148,26 @@ def main():
             else:
                 # caluculate mask
                 t_seg2 = seg2==2
-                # need torch no grad?
+                # need torch no grad: Yes
                 with torch.no_grad():
                     warped_tseg = mmodel.reconstruction(t_seg2.float(), agg_flows[-1])
                 mask = (warped_tseg > 0.5) | (seg1==2)
                 assert mask.requires_grad == False
-                sim = masked_sim_loss(fixed, warped[-1], mask)
+                if args.masked == 'seg':
+                    sim = masked_sim_loss(fixed, warped[-1], mask)
+                elif args.masked == 'soft':
+                    # to do: add soft mask about grid area change
+                    # get soft mask
+                    flow_det = jacobian_det(agg_flows[-1].detach(), return_det=True)
+                    flow_det = flow_det.unsqueeze(1).abs()
+                    # resize
+                    areas = F.interpolate(flow_det, size=fixed.shape[-3:], mode='trilinear', align_corners=False)
+                    # normalize soft mask
+                    w = torch.where(areas>1, 1/areas, areas)
+                    soft_mask = w/w.mean(dim=(2,3,4), keepdim=True)
+                    # soft mask * sim loss per pixel
+                    sim = masked_sim_loss(fixed, warped[-1], mask, soft_mask)
+
             reg = reg_loss(flows[1:])
             loss = sim+reg+det+ort
             loss.backward()
