@@ -7,6 +7,7 @@ import os
 from pathlib import Path as pa
 import sys
 sys.path.append('..')
+sys.path.append('.')
 from networks.spatial_transformer import SpatialTransform
 from utils import draw_seg_on_vol, show_img, visualize_3d
 import torch
@@ -43,8 +44,7 @@ print(dct['dice_liver'])
 idx = 0
 errs = []
 
-import h5py
-h5_name = '../datasets/lits_deform_L.h5'
+h5_name = '/home/hynx/regis/recursive-cascaded-networks/datasets/lits_deform_L.h5'
 reader = FFD_GT(h5_name)
 
 save_im = False

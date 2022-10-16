@@ -5,6 +5,20 @@ from PIL import Image
 
 tt = torch.as_tensor
 
+def load_model(state_dict, model):
+    # load state dict
+    model.stems.load_state_dict(state_dict['stem_state_dict'])
+    return model
+
+def load_model_from_dir(checkpoint_dir, model):
+    # glob file with suffix pth
+    from pathlib import Path as pa
+    import re
+    p = pa(checkpoint_dir).glob('*.pth')
+    p = sorted(p, key=lambda x: [int(n) for n in re.findall(r'\d+', str(x))])
+    model_path = str(p[-1])
+    load_model(torch.load(model_path), model)
+
 def visualize_3d(data, width=5, inter_dst=5, save_name=None):
     """
     data: (S, H, W) or (N, C, H, W)"""
