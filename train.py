@@ -3,6 +3,7 @@ import json
 import argparse
 import os
 import time
+from tools.utils import load_model_from_dir
 import torch
 from torch.functional import F
 from networks.recursive_cascade_networks import RecursiveCascadeNetwork
@@ -80,6 +81,10 @@ def main():
         segmentation_class_value=cfg.get('segmentation_class_value', {'unknown':1})
 
     model = RecursiveCascadeNetwork(n_cascades=args.n_cascades, im_size=image_size).cuda()
+    if args.masked == 'soft':
+        state_path = '/home/hynx/regis/recursive-cascaded-networks/ckp/model_wts/Sep27_145203_normal'
+        stage1_model = RecursiveCascadeNetwork(n_cascades=args.n_cascades, im_size=image_size).cuda()
+        load_model_from_dir(state_path, stage1_model)
     # add checkpoint loading
     if args.checkpoint:
         print("Loading checkpoint from {}".format(args.checkpoint))
@@ -158,7 +163,9 @@ def main():
                 elif args.masked == 'soft':
                     # to do: add soft mask about grid area change
                     # get soft mask
-                    flow_det = jacobian_det(agg_flows[-1].detach(), return_det=True)
+                    with torch.no_grad():
+                        _, _, s1_agg_flows = stage1_model(fixed, moving)
+                    flow_det = jacobian_det(s1_agg_flows[-1].detach(), return_det=True)
                     flow_det = flow_det.unsqueeze(1).abs()
                     # resize
                     areas = F.interpolate(flow_det, size=fixed.shape[-3:], mode='trilinear', align_corners=False)

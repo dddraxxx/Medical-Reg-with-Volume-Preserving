@@ -34,11 +34,6 @@ args = parser.parse_args()
 if args.gpu:
     os.environ["CUDA_VISIBLE_DEVICES"] = args.gpu
 
-def load_model(state_dict, model):
-    # load state dict
-    model.stems.load_state_dict(state_dict['stem_state_dict'])
-    return model
-
 def main():
     # build dataset
     # read config
@@ -54,12 +49,7 @@ def main():
     # add checkpoint loading
     print("Loading checkpoint from {}".format(args.checkpoint))
     if os.path.isdir(args.checkpoint):
-        # glob file with suffix pth
-        from pathlib import Path as pa
-        p = pa(args.checkpoint).glob('*.pth')
-        p = sorted(p, key=lambda x: [int(n) for n in re.findall(r'\d+', str(x))])
-        model_path = str(p[-1])
-        load_model(torch.load(model_path), model)
+        load_model_from_dir(args.checkpoint, model)
     else:
         model_path = args.checkpoint
         load_model(torch.load(model_path), model)
