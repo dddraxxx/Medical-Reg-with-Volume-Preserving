@@ -105,3 +105,31 @@ def combine_pil_img(*ims):
     for i, im_ in enumerate(ims):
         im.paste(im_, (sum(widths[:i])+5*i, 0))
     return im
+
+combo_imgs = lambda *ims: combine_pil_img(*[show_img(i) for i in ims])
+
+import matplotlib.pyplot as plt
+def plt_img3d_show(imgs, cmap, intrv=5):
+    fig, axes = plt.subplots((len(imgs+1))//(intrv**2), intrv)
+    for ax, i in zip(axes.flatten(), range(0, len(imgs), intrv)):
+        p = ax.imshow(imgs[i], cmap=cmap)
+        # turnoff axis
+        ax.axis('off')
+        # title
+        ax.set_title(f'{i}')
+    plt.colorbar(p, ax=ax)
+    # tight
+    plt.tight_layout()
+    plt.show()
+
+def plt_img3d_axes(imgs, func, intrv=5):
+    fig, axes = plt.subplots((len(imgs+1))//(intrv**2), intrv)
+    for ax, i in zip(axes.flatten(), range(0, len(imgs), intrv)):
+        func(ax, i)
+        # turnoff axis
+        ax.axis('off')
+        # title
+        ax.set_title(f'{i}')
+    # tight
+    plt.tight_layout()
+    plt.show()

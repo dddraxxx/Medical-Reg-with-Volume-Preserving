@@ -1,4 +1,6 @@
 # %%
+import matplotlib
+from matplotlib import widgets
 import matplotlib.pyplot as plt
 from matplotlib.collections import LineCollection
 from mpl_toolkits.mplot3d.art3d import Line3DCollection
@@ -7,14 +9,15 @@ import pickle as pkl
 import numpy as np
 from pathlib import Path as pa
 import pygem as pg
+from free_form_deformation import quick_FFD
 
-from adet.utils.visualize_niigz import *
+from utils import visualize_3d, tt
 
-def show_img(res):
+def show_img(res, intrv=5):
     import torchvision.transforms as T
     res = tt(res)
     if res.ndim>=3:
-        return T.ToPILImage()(visulize_3d(res))
+        return T.ToPILImage()(visualize_3d(res, inter_dst=intrv))
     # normalize res
     res = (res-res.min())/(res.max()-res.min())
     return T.ToPILImage()(res)
@@ -68,7 +71,7 @@ def find_loc_to_paste_tumor(seg1, kseg2, bbox):
     # organ_pt should be in seg1 organ
     pts = box_pts.T[seg1[tuple(organ_pt.tolist())]>0]
     print('len of pts in box', len(pts))
-    pts = pts[::10]
+    pts = pts[::5]
     pts = np.random.permutation(pts)
     if len(pts):
         for i in range(len(pts)):
@@ -79,13 +82,21 @@ def find_loc_to_paste_tumor(seg1, kseg2, bbox):
                 return np.array([pt, pt+box_length])
     raise ValueError("cannot find a location to paste tumor")
 
-def find_largest_component(seg):
+def find_largest_component(seg, label=2):
     from monai.transforms import KeepLargestConnectedComponent
-    k = KeepLargestConnectedComponent(2)
+    k = KeepLargestConnectedComponent(label)
     kseg = np.maximum(k(seg[None].copy()), seg>0)
     return kseg
 
-def find_bbox(seg2):
+def ext_bbox(f_bbox, ratio=.5):
+    box_length = f_bbox[1]-f_bbox[0]
+    ext_l = np.random.rand(3)*(box_length*ratio)
+    print('box length', box_length, '\nextended length', ext_l)
+    bbox = np.stack([np.maximum(f_bbox[0]-ext_l, 0), np.minimum(f_bbox[1]+ext_l, 128-1)], axis=0)
+    return bbox
+
+def find_bbox(seg1, seg2, total_bbox=True):
+    '''total_bbox: the bbox for ffd'''
     from monai.transforms.utils import generate_spatial_bounding_box
     kseg2 = find_largest_component(seg2)
     bbox = generate_spatial_bounding_box(kseg2, lambda x:x==2)
@@ -93,13 +104,10 @@ def find_bbox(seg2):
     o_bbox = np.array(bbox)
     f_bbox = find_loc_to_paste_tumor(seg1, kseg2, o_bbox)
     print("origin bbox", o_bbox)
-    box_length = f_bbox[1]-f_bbox[0]
-    ext_l = np.random.rand(3)*(box_length/2)
-    print('box length', box_length, '\nextenede length', ext_l)
-    bbox = np.stack([np.maximum(f_bbox[0]-ext_l, 0), np.minimum(f_bbox[1]+ext_l, 128-1)], axis=0)
-    # print('extended bbox', bbox[0], bbox[1])
-    # print("find bbox", f_bbox)
-    # print("new center", np.array([c_x, c_y, c_z]) - o_bbox[0] + f_bbox[0])
+    if total_bbox:
+        bbox = np.array([[0,0,0], seg1.shape])
+    else:
+        bbox = ext_bbox(f_bbox)
     return kseg2, o_bbox, f_bbox, bbox
 
 def draw_3dbox(res, l, r, val=255):
@@ -111,58 +119,51 @@ def draw_3dbox(res, l, r, val=255):
     return res
     
 from scipy.ndimage import map_coordinates
-# Small disp: 0.2, 0.4
-# Large disp: 0.4, 0.4
-def presure_ffd(o_bbox, f_bbox, bbox, kseg2, fct_low=0.4, fct_range=0.4):
-    l = 8
-    ffd = pg.FFD([l, l, l])
+def presure_ffd(bbox, paste_seg2, fct_low=0.5, fct_range=0.4, l=8, order=1):
+    global seg_pts, prs_matrix, dst_matrix, dsp_matrix
+    ffd = quick_FFD([l, l, l])
     ffd.box_origin = bbox[0]
     ffd.box_length = bbox[1]-bbox[0]
-    control_pts = ffd.control_points(False).reshape(l,l,l,3)[1:-1,1:-1,1:-1]
+    control_pts = ffd.control_points(False).reshape(l,l,l,3)#[1:-1,1:-1,1:-1]
     # calculate tumor map for each control point
-    paste_seg2 = np.zeros_like(kseg2)
-    paste_seg2[f_bbox[0][0]:f_bbox[1][0], f_bbox[0][1]:f_bbox[1][1], f_bbox[0][2]:f_bbox[1][2]] = kseg2[o_bbox[0][0]:o_bbox[1][0], o_bbox[0][1]:o_bbox[1][1], o_bbox[0][2]:o_bbox[1][2]]
-    seg_pts = map_coordinates(paste_seg2==2, control_pts.reshape(-1,3).T, order=0, mode='nearest')
+    seg_pts = map_coordinates(paste_seg2, control_pts.reshape(-1,3).T, order=0, mode='nearest')
     seg_pts = seg_pts.reshape(*control_pts.shape[:3])
     # calculate the pressure
+    # calculate the distance between control points
     dsp_matrix = control_pts.reshape(-1, 3) - control_pts.reshape(-1, 3)[:, None]
     dsp_matrix /= ffd.box_length
     # diagonal entries are the same point, and no need to calculate the distance
     dst_matrix = (dsp_matrix**2).sum(axis=-1)
-    np.fill_diagonal(dst_matrix, 1)
+    dst_matrix[dst_matrix==0] = 1
     fct = np.random.rand()*fct_range+fct_low
     print('factor', fct)
-    prs_matrix = fct*dsp_matrix/dst_matrix[...,None]
-    prs_pts = (prs_matrix*seg_pts.reshape(-1,1)).sum(axis=1)
+    # pressure = factor * (1/distance^2),
+    # pressure outside organ = 0
+    prs_matrix = fct*dsp_matrix/(dst_matrix[...,None]**(1+order/2))
+    prs_pts = (prs_matrix*(seg_pts!=2).reshape(1,-1,1)).sum(axis=0)
     dx, dy, dz = prs_pts.reshape(*control_pts.shape).transpose(-1,0,1,2)/((l-1)**3)
-    # dx, dy, dz = prs_pts.reshape(*control_pts.shape).transpose(-1,0,1,2)/(l-1)/ffd.box_length[:,None,None,None]
-    ffd.array_mu_x[1:-1,1:-1,1:-1] = dx
-    ffd.array_mu_y[1:-1,1:-1,1:-1] = dy
-    ffd.array_mu_z[1:-1,1:-1,1:-1] = dz
+    # ffd.array_mu_x[1:-1,1:-1,1:-1] = dx
+    # ffd.array_mu_y[1:-1,1:-1,1:-1] = dy
+    # ffd.array_mu_z[1:-1,1:-1,1:-1] = dz
+    ffd.array_mu_x = dx
+    ffd.array_mu_x[seg_pts==0] = 0
+    ffd.array_mu_y = dy
+    ffd.array_mu_y[seg_pts==0] = 0
+    ffd.array_mu_z = dz
+    ffd.array_mu_z[seg_pts==0] = 0
+    return ffd
 
-    ## %% plot deform
-    # %matplotlib widget
-    # fig = plt.figure(figsize=(4, 4))
-    # ax = Axes3D(fig)
-    # ax.scatter(*control_pts[seg_pts].T, s=20, c='green')
-    # # ax.scatter(*control_pts[~seg_pts].T, s=20)
-    # ax.scatter(*ffd.control_points().T, s=5, c='red')
-    # # plt_grid3d(ffd.control_points(False), ax, colors='b', linewidths=1)
-    # plt_grid3d(ffd.control_points(), ax, colors='r', linewidths=0.5)
-    # # show x,y,z axis
-    # ax.set_xlabel('x')
-    # ax.set_ylabel('y')
-    # ax.set_zlabel('z')
-    # ax.view_init(3, 90)
-    return ffd, paste_seg2
-
-def do_ffd(ffd, img, seg=None):
-    x, y, z = np.meshgrid(np.arange(img.shape[0]), np.arange(img.shape[1]), np.arange(img.shape[2]), indexing='ij')
+def ffd_mesh(ffd, shape):
+    x, y, z = np.meshgrid(np.arange(shape[0]), np.arange(shape[1]), np.arange(shape[2]), indexing='ij')
     mesh = np.stack([x, y, z], axis=-1).reshape(-1, 3).astype(float)
     n_mesh = ffd(mesh)
     nr_mesh = n_mesh.reshape(128,128,128,3)
+    return nr_mesh
+
+def do_ffd(ffd, img, seg=None, order=3):
+    nr_mesh = ffd_mesh(ffd, img.shape)
     # this is backward pass, not correct
-    res = map_coordinates(img, nr_mesh.transpose(-1,0,1,2), order=3, mode='constant', cval=0)
+    res = map_coordinates(img, nr_mesh.transpose(-1,0,1,2), order=order, mode='constant', cval=0)
     if seg is not None:
         reseg = map_coordinates(seg, nr_mesh.transpose(-1,0,1,2), order=0, mode='constant', cval=0)
         return res, reseg
@@ -182,7 +183,7 @@ from scipy.ndimage import distance_transform_edt
 
 # signed distance map
 def sdm(kseg2, feather_len):
-    global dist_pts, weight_kseg2, dst_to_weight
+    # global dist_pts, weight_kseg2, dst_to_weight
     dist_pts = distance_transform_edt(kseg2!=2) - distance_transform_edt(kseg2==2)
     weight_kseg2 = np.zeros_like(kseg2, dtype=np.float32)
     dst_to_weight = lambda x, l: 0.5-x/2/l
@@ -196,7 +197,7 @@ def sdm(kseg2, feather_len):
 
 # distance map
 def dm(kseg2, feather_len):
-    global dist_pts, weight_kseg2, dst_to_weight
+    # global dist_pts, weight_kseg2, dst_to_weight
     dist_pts = distance_transform_edt(kseg2!=2)
     weight_kseg2 = np.zeros_like(kseg2, dtype=np.float32)
     dst_to_weight = lambda x, l: 1-x/l
@@ -226,10 +227,13 @@ def feathering_paste(feather_len, res, img2, kseg2, f_bbox, o_bbox):
     res1 = res*weight_seg1 + roll_img2*(1-weight_seg1)
     return res1
 
+def calc_disp(points, axis=-1):
+    flow = points-np.moveaxis(np.mgrid[:points.shape[0],:points.shape[1],:points.shape[2]].astype(np.float32), 0, axis)
+    return np.linalg.norm(flow,axis=axis)
 
 ## %% part 2 of the deform: random deformation
 def random_ffd(l=5):
-    ffd = pg.FFD([l, l, l])
+    ffd = quick_FFD([l, l, l])
     ffd.box_length = np.full(3, 128-1)
     ffd.box_origin = np.zeros(3)
     # get random field
@@ -239,17 +243,37 @@ def random_ffd(l=5):
     ffd.array_mu_z += z_field
     return ffd
 
-def plt_ffd(ffd):
+def gca3D(**kwargs):
+    fig = plt.figure(figsize=(4,4), **kwargs)
+    return Axes3D(fig)
+
+def plt_ffd(ffd, interval=1):
     fig = plt.figure(figsize=(4, 4))
     ax = Axes3D(fig)
-    ax.scatter(*ffd.control_points(False).T, s=10)
-    ax.scatter(*ffd.control_points().T, s=10, c='red')
+    if isinstance(interval, int):
+        sl = np.s_[::interval, ::interval, ::interval]
+    else:
+        sl = interval
+    intrv = lambda x:x.reshape(*ffd.n_control_points, 3)[sl].reshape(-1,3)
+    ax.scatter(*intrv(ffd.control_points(False)).T, s=10, c='blue')
+    ax.scatter(*intrv(ffd.control_points()).T, s=5, c='red')
     # plt_grid3d(ffd.control_points(False), ax, colors='blue')
-    plt_grid3d(ffd.control_points(), ax, colors='red')
+    plt_grid3d(intrv(ffd.control_points()), ax, colors='red', linewidths=0.5)
     plt.show()
 
 def ffd_params(ffd):
     return np.array([*ffd.n_control_points, *ffd.box_origin, *ffd.box_length, *ffd.array_mu_x.flatten(), *ffd.array_mu_y.flatten(), *ffd.array_mu_z.flatten()])
+
+def get_paste_seg(seg1, kseg2, f_bbox, o_bbox):
+    paste_seg2 = np.zeros_like(kseg2)
+    paste_seg2[f_bbox[0][0]:f_bbox[1][0], f_bbox[0][1]:f_bbox[1][1], f_bbox[0][2]:f_bbox[1][2]] = kseg2[o_bbox[0][0]:o_bbox[1][0], o_bbox[0][1]:o_bbox[1][1], o_bbox[0][2]:o_bbox[1][2]]
+    paste_seg2 = np.where(paste_seg2==2, 2, seg1)
+    return paste_seg2
+
+# TODO: Add foldover check
+
+def draw_countour(ax, disp, levels=5):
+    return ax.contour(disp, levels=levels)
 
 #%%
 if __name__=='__main__':
@@ -274,14 +298,14 @@ if __name__=='__main__':
     id2s = ['104',  '51', '118', '129']
     # below tumor too large 
     # id2s = ['129', "33", "100", "108", "130", "4"]
-    write_h5 = False
+    write_h5 = True
     validate = False
     if write_h5:
         h5_writer = h5py.File('/home/hynx/regis/Recursive-Cascaded-Networks/datasets/lits_deform_fL.h5', 'w')
     img_dir = '/home/hynx/regis/zFFD/'
     #%%
-    for id1 in id1s:
-        for id2 in id2s:
+    for id1 in id1s[:2]:
+        for id2 in id2s[:2]:
             print('\ndeforming organ {} for tumor {}'.format(id1, id2))
             img1 = dct[id1]['volume'][...]
             img2 = dct[id2]['volume'][...]
@@ -290,30 +314,101 @@ if __name__=='__main__':
 
             combine_pil_img(show_img(seg1), show_img(seg2), show_img(find_largest_component(seg2)[0])).save(img_dir+'img/{}-{}_seg.png'.format(id1, id2))
             combine_pil_img(show_img(img1), show_img(img2)).save(img_dir+'img/{}-{}_img.png'.format(id1, id2))
-
+            #%% stage 1
             try:
-                kseg2, o_bbox, f_bbox, bbox = find_bbox(seg2)
+                kseg2, o_bbox, f_bbox, bbox = find_bbox(seg1, seg2, True)
             except ValueError as e:
                 print(e)
                 continue
-            p_ffd, paste_seg2 = presure_ffd(o_bbox, f_bbox, bbox, seg2)
+            #%%
+            def presure_ffd(bbox, paste_seg2, fct_low=0.5, fct_range=0.4, l=8, order=1, sample_num=1000):
+                ffd = quick_FFD([l, l, l])
+                ffd.box_origin = bbox[0]
+                ffd.box_length = bbox[1]-bbox[0]
+                control_pts = ffd.control_points(False).reshape(l,l,l,3)#[1:-1,1:-1,1:-1]
+                # calculate tumor map for each control point
+                seg_pts = map_coordinates(paste_seg2, control_pts.reshape(-1,3).T, order=0, mode='nearest')
+                seg_pts = seg_pts.reshape(*control_pts.shape[:3])
+                # calculate the pressure
+                # sample tumor points
+                tumor_pts = np.mgrid[:paste_seg2.shape[0], :paste_seg2.shape[1], :paste_seg2.shape[2]].transpose(1,2,3,0)[paste_seg2==2]
+                # tumor_pts = tumor_pts[np.random.choice(tumor_pts.shape[0], sample_num, replace=False)]
+                tumor_pts = tumor_pts[::tumor_pts.shape[0]//sample_num]
+                # tumor_pts = control_pts[seg_pts==2]
+                # calculate the distance between control points
+                dsp_matrix = - control_pts.reshape(-1, 3) + tumor_pts.reshape(-1, 3)[:, None]
+                dsp_matrix /= ffd.box_length
+                # diagonal entries are the same point, and no need to calculate the distance
+                dst_matrix = (dsp_matrix**2).sum(axis=-1)
+                dst_matrix[dst_matrix==0] = 1
+                # pressure = factor * (norm_vector/distance^order),
+                prs_matrix = dsp_matrix/(1e-5+dst_matrix[...,None]**(0.5+order/2))
+                prs_pts = (prs_matrix*(seg_pts!=2).reshape(1,-1,1)).sum(axis=0)/sample_num
+                dxyz = prs_pts.reshape(*control_pts.shape).transpose(-1,0,1,2)
+                # normalize the pressure by points' distance to boundary
+                # fct = np.random.rand()*fct_range+fct_low
+                # print('factor', fct)
+                dist_to_bnd, bnd_ind = distance_transform_edt(seg_pts>0, sampling=1/(l-1), return_indices=True)
+                dist_to_tu = distance_transform_edt(seg_pts<2, sampling=1/(l-1))
+                disp_prs = np.linalg.norm(prs_pts, axis=-1)
+                size_fct = (dist_to_bnd.flatten())/(disp_prs+1e-9) #*fct
+                factor = np.percentile(size_fct[seg_pts.flatten()>0],
+                    40)
+                dxyz = dxyz * factor
+                # smooth/regularize the pressure field
+                b2t_ratio = dist_to_bnd/(dist_to_tu+dist_to_bnd+1e-6)
+                dxyz = dxyz * b2t_ratio[None]
+                print('max pressure', np.linalg.norm(dxyz, axis=0).max())
+                dx, dy, dz = dxyz
+                ffd.array_mu_x = dx
+                ffd.array_mu_y = dy
+                ffd.array_mu_z = dz
+                # pressure outside organ = 0
+                ffd.array_mu_x[seg_pts==0] = 0
+                ffd.array_mu_y[seg_pts==0] = 0
+                ffd.array_mu_z[seg_pts==0] = 0
+                globals().update(locals())
+                return ffd
+            paste_seg2 = get_paste_seg(seg1, kseg2, f_bbox, o_bbox)
+            p_ffd = presure_ffd(bbox, paste_seg2, fct_low=0.5, fct_range=0, l=16, order=3.5, sample_num=1000)
+            #%% visualize pressure to the image
+            # %matplotlib widget
+            # plt_ffd(p_ffd, interval=np.s_[9:12,9:12,9:12])
+            # # %%
+            # plt.figure()
+            # ax = plt.gca()
+            # dsp_xyz = (dxyz**2).sum(0)
+            # d = ax.contour(dsp_xyz[10], levels=3)
+            # ax.clabel(d, inline=True, fontsize=10)
+            # ax.imshow(seg_pts[10], alpha=0.5)
+            # plt.show()
+            # # %%
+            wpts = ffd_mesh(p_ffd, img1.shape)
+            disp = calc_disp(wpts, axis=-1)
+            print('max displacement', disp.max())
+            # %matplotlib widget
+            # ax = plt.gca()
+            # d = draw_countour(ax, disp[95], levels=10)
+            # ax.clabel(d, inline=True, fontsize=10)
+            # ax.imshow(paste_seg2[95], alpha=0.6)
+            # # ax.imshow(disp[100], alpha=0.4)
+            # plt.show()
+            #%%
             res, res_seg = do_ffd(p_ffd, img1, seg1)
             feather_len = 5
             # paste tumor
             # res1 = direct_paste()
             res1 = feathering_paste(feather_len, res, img2, kseg2, f_bbox, o_bbox)
             res_seg[paste_seg2==2]=2
-            # just for validation
+            ##%% just for validation
             # res1 = res
-
             # dres = draw_3dbox(res1, f_bbox[0], f_bbox[1])
             # dimg2 = draw_3dbox(img2, o_bbox[0], o_bbox[1])
             # combine_pil_img(show_img(dres), show_img(dimg2), show_img(res1))
-            ## %%
             # show_img(distance_transform_edt(kseg2!=2) - distance_transform_edt(kseg2==2))
             # show_img(sdm(kseg2, feather_len))
             # show_img(weight_kseg2*img2)
-            #%%
+            #%% stage 2
             r_ffd = random_ffd() # l=5 the default settings
             # plt_ffd(ffd)
             res2, res2_seg = do_ffd(r_ffd, res1, res_seg)

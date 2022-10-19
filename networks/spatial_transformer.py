@@ -12,7 +12,7 @@ class SpatialTransform(nn.Module):
         super(SpatialTransform, self).__init__()
 
         vectors = [torch.arange(0, s) for s in size]
-        grids = torch.meshgrid(vectors)
+        grids = torch.meshgrid(vectors, indexing='ij')
         grid = torch.stack(grids)  # y, x, z
         grid = torch.unsqueeze(grid, 0)  # add batch
         grid = grid.type(torch.FloatTensor)

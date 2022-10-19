@@ -32,6 +32,7 @@ parser.add_argument('-d', '--dataset', type=str, default='datasets/liver_cust.js
 parser.add_argument('--lr', type=float, default=1e-4)
 parser.add_argument('--debug', action='store_true', help="run the script without saving files")
 parser.add_argument('--name', type=str, default='')
+parser.add_argument('--ortho', type=float, default=0.1, help="use ortho loss")
 parser.add_argument('-m', '--masked', choices=['soft', 'seg'], default='',
      help="mask the tumor part when calculating similarity loss")
 args = parser.parse_args()
@@ -143,7 +144,7 @@ def main():
             warped, flows, agg_flows, affine_params = model(fixed, moving, return_affine=True)
 
             # affine loss
-            ortho_factor, det_factor = 0.1, 0.1
+            ortho_factor, det_factor = args.ortho, 0.1
             A = affine_params['theta'][..., :3, :3]
             ort = ortho_factor * ortho_loss(A)
             det = det_factor * det_loss(A)
