@@ -19,13 +19,9 @@ This repository includes:
 
 You need to define your own loader based on your dataset.
 
-`python train.py -b BATCH_SIZE -n NUMBER_OF_CASCADES -e EPOCHS -i ITERS -iv VAL_ITERS -c FREQ_FOR_SAVE_MODEL -f SAMPLE_FOR VISUALIZATION`
-
-We generate some visualizations during training that you can see in `train.py`.
-
-<img src='./images/visualization.png' width=100%>
+`python train.py
 
 
 ## Acknowledgement
 
-This is a pytorch version based on the official tensorflow implementation: https://github.com/microsoft/Recursive-Cascaded-Networks
+This is a pytorch version based on the implementation: https://github.com/microsoft/Recursive-Cascaded-Networks and https://github.com/ivan-jgr/recursive-cascaded-networks.
