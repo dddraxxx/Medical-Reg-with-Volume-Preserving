@@ -15,9 +15,13 @@ This repository includes:
 
 * The recursive cascade network implementation with VTN as a base network for 3D and 2D images.
 
+## Dataset
+
+Refers to https://github.com/microsoft/Recursive-Cascaded-Networks#datasets.
+
 ## Training
 
-`python train.py`
+`python train.py -d DATASET -g GPU_ID`
 
 
 ## Acknowledgement
