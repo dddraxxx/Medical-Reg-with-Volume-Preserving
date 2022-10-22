@@ -17,9 +17,7 @@ This repository includes:
 
 ## Training
 
-You need to define your own loader based on your dataset.
-
-`python train.py
+`python train.py`
 
 
 ## Acknowledgement
