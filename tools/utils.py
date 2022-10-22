@@ -18,8 +18,9 @@ def load_model_from_dir(checkpoint_dir, model):
     p = sorted(p, key=lambda x: [int(n) for n in re.findall(r'\d+', str(x))])
     model_path = str(p[-1])
     load_model(torch.load(model_path), model)
+    return model_path
 
-def visualize_3d(data, width=5, inter_dst=5, save_name=None):
+def visualize_3d(data, width=5, inter_dst=5, save_name=None, print_=False):
     """
     data: (S, H, W) or (N, C, H, W)"""
     data =tt(data)
@@ -32,7 +33,8 @@ def visualize_3d(data, width=5, inter_dst=5, save_name=None):
     if img.dim() < 4:
         img = img[:, None]
     img = img[::inter_dst]
-    print("Visualizing img with shape and type:", img.shape, img.dtype, "on path {}".format(save_name) if save_name else "")
+    if print_:
+        print("Visualizing img with shape and type:", img.shape, img.dtype, "on path {}".format(save_name) if save_name else "")
 
     img_f = make_grid(img, nrow=width, padding=5, pad_value=1, normalize=True)
     if save_name:
@@ -133,3 +135,4 @@ def plt_img3d_axes(imgs, func, intrv=5):
     # tight
     plt.tight_layout()
     plt.show()
+    return plt

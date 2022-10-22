@@ -45,8 +45,8 @@ class FFD_GT:
         # get warping gt
         points = self.ffd_gt.reshape(-1,3)
         values = -self.return_flow().reshape(-1,3)
-        xi = np.mgrid[0:img2.shape[0], 0:img2.shape[1], 0:img2.shape[2]].astype(np.float32).reshape(3, -1).T
-        self.gt_flow = griddata(points, values, xi, method='nearest')
+        xi = np.mgrid[0:self.shape[0], 0:self.shape[1], 0:self.shape[2]].astype(np.float32).reshape(3, -1).T
+        self.gt_flow = griddata(points, values, xi, method='nearest').reshape(*self.shape)
         # get threshold
         self.thres = np.percentile(self.disp, 95)
         return self
@@ -86,6 +86,15 @@ class FFD_GT:
     def close(self):
         self.reader.close()
 
+from networks.spatial_transformer import SpatialTransform
+import torch
+def cal_single_warped(flow, img):
+    if not isinstance(img, torch.Tensor):
+        img = torch.tensor(img)
+    img = img.float()
+    st = SpatialTransform(img.shape)
+    w_img = st(img[None,None], flow[None], mode='bilinear')
+    return w_img[0,0]
 #%% main function
 if __name__ == '__main__':
     from utils import show_img, combine_pil_img, combo_imgs, plt_img3d_show
@@ -127,12 +136,7 @@ if __name__ == '__main__':
     import sys
     sys.path.append('..')
     sys.path.append('.')
-    from networks.spatial_transformer import SpatialTransform
-    def cal_single_warped(flow, img):
-        img = torch.tensor(img).double()
-        st = SpatialTransform(img.shape)
-        w_img = st(img[None,None], flow[None], mode='bilinear')
-        return w_img[0,0]
+    
     
     def do_warp(flow, img, seg=None, order=1):
         x, y, z = np.meshgrid(np.arange(img.shape[0]), np.arange(img.shape[1]), np.arange(img.shape[2]), indexing='ij')

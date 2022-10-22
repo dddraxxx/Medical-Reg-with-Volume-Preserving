@@ -48,10 +48,11 @@ def main():
     model = RecursiveCascadeNetwork(n_cascades=args.n_cascades, im_size=image_size).cuda()
     # add checkpoint loading
     print("Loading checkpoint from {}".format(args.checkpoint))
+    from tools.utils import load_model, load_model_from_dir
+    model_path = args.checkpoint
     if os.path.isdir(args.checkpoint):
-        load_model_from_dir(args.checkpoint, model)
+        model_path = load_model_from_dir(args.checkpoint, model)
     else:
-        model_path = args.checkpoint
         load_model(torch.load(model_path), model)
     
     # parent of model path
@@ -109,9 +110,10 @@ def main():
             print("{}: {} ({})".format(dice_k, np.mean(results[dice_k]), np.std(results[dice_k])), file=fo)
 
     if args.save_pkl:
-        with open(output_fname.replace('.txt', '.pkl'), 'wb') as fo:
+        pkl_name = output_fname.replace('.txt', '.pkl')
+        with open(pkl_name, 'wb') as fo:
             pickle.dump(results, fo)
-        print('finish saving pkl')
+        print('finish saving pkl to {}'.format(pkl_name))
 
 if __name__ == '__main__':
     main()
