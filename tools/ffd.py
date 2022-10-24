@@ -11,39 +11,7 @@ from pathlib import Path as pa
 import pygem as pg
 from free_form_deformation import quick_FFD
 
-from utils import visualize_3d, tt
-
-def show_img(res, intrv=5):
-    import torchvision.transforms as T
-    res = tt(res)
-    if res.ndim>=3:
-        return T.ToPILImage()(visualize_3d(res, inter_dst=intrv))
-    # normalize res
-    res = (res-res.min())/(res.max()-res.min())
-    return T.ToPILImage()(res)
-
-def plt_grid3d(pts, ax, **kwargs):
-    l = np.round(len(pts)**(1/3)).astype(int)
-    x, y, z = pts.T.reshape(-1, l, l, l)
-    grid1 = np.stack((x,y,z), axis=-1)
-    ax.add_collection3d(Line3DCollection(grid1.reshape(-1, l, 3), **kwargs))
-    ax.add_collection3d(Line3DCollection(grid1.transpose(0,2,1,3).reshape(-1, l, 3),  **kwargs))
-    ax.add_collection3d(Line3DCollection(grid1.transpose(1,2,0,3).reshape(-1, l, 3),  **kwargs))
-
-from PIL import Image
-def combine_pil_img(*ims):
-    widths, heights = zip(*(i.size for i in ims))
-    total_width = sum(widths) + 5*(len(ims)-1)
-    total_height = max(heights)
-    im = Image.new('RGB', (total_width, total_height), color='white')
-    for i, im_ in enumerate(ims):
-        im.paste(im_, (sum(widths[:i])+5*i, 0))
-    return im
-
-def save_niigz(arr, path):
-    import itk
-    img = itk.GetImageFromArray(arr)
-    itk.imwrite(img, path)
+from utils import visualize_3d, tt, show_img, combine_pil_img
 
 # calculate centroid of seg2
 def cal_centroid(seg2):
@@ -153,19 +121,58 @@ def presure_ffd(bbox, paste_seg2, fct_low=0.5, fct_range=0.4, l=8, order=1):
     ffd.array_mu_z[seg_pts==0] = 0
     return ffd
 
-def ffd_mesh(ffd, shape):
-    x, y, z = np.meshgrid(np.arange(shape[0]), np.arange(shape[1]), np.arange(shape[2]), indexing='ij')
-    mesh = np.stack([x, y, z], axis=-1).reshape(-1, 3).astype(float)
-    n_mesh = ffd(mesh)
-    nr_mesh = n_mesh.reshape(128,128,128,3)
-    return nr_mesh
-
-def do_ffd(ffd, img, seg=None, order=3):
-    nr_mesh = ffd_mesh(ffd, img.shape)
+def do_warp(flow, img, seg=None, order=1):
+    x, y, z = np.meshgrid(np.arange(img.shape[0]), np.arange(img.shape[1]), np.arange(img.shape[2]), indexing='ij')
+    mesh = np.stack([x, y, z], axis=-1)
+    nr_mesh = flow + mesh
     # this is backward pass, not correct
     res = map_coordinates(img, nr_mesh.transpose(-1,0,1,2), order=order, mode='constant', cval=0)
     if seg is not None:
         reseg = map_coordinates(seg, nr_mesh.transpose(-1,0,1,2), order=0, mode='constant', cval=0)
+        return res, reseg
+    return res
+
+def ffd_flow(ffd, size, return_mesh=False):
+    pt = np.mgrid[0:size[0], 0:size[1], 0:size[2]].astype(np.float32).reshape(3, -1).T
+    flow = ffd(pt)-pt
+    flow = flow.reshape(*size, 3)
+    return flow if not return_mesh else (flow, pt.reshape(*size,3))
+
+def ffd_mesh(ffd, shape=None, mesh=None, return_mesh=False):
+    assert shape or mesh
+    if shape is not None:
+        x, y, z = np.meshgrid(np.arange(shape[0]), np.arange(shape[1]), np.arange(shape[2]), indexing='ij')
+        mesh = np.stack([x, y, z], axis=-1).astype(float)
+    if mesh is not None:
+        mesh = mesh.astype(float)
+    n_mesh = ffd(mesh.reshape(-1, 3))
+    nr_mesh = n_mesh.reshape(128,128,128,3)
+    return nr_mesh if not return_mesh else (nr_mesh, mesh)
+
+def flow_reverse(flow, rev_points=None):
+    if rev_points is None:
+        rev_points = np.mgrid[0:flow.shape[0], 0:flow.shape[1], 0:flow.shape[2]].astype(np.float32).reshape(3, -1).T
+    xi = rev_points.reshape(-1, 3)
+    points = flow.reshape(-1,3) + xi
+    values = -flow.reshape(-1,3)
+    from scipy.interpolate import griddata
+    rev_flow = griddata(points[::], values, xi, method='nearest')
+    return rev_flow.reshape(*flow.shape)
+
+def do_ffd(ffd, img, seg=None, order=1, reverse=False):
+    if reverse:
+        # get flow
+        flow, mesh = ffd_flow(ffd, img.shape, True)
+        # reverse flow using nearest
+        flow_rev = flow_reverse(flow, mesh)
+        # get point
+        nr_mesh = mesh + flow_rev
+    else:
+        nr_mesh = ffd_mesh(ffd, img.shape)
+    res = map_coordinates(img, nr_mesh.transpose(-1,0,1,2), order=order, mode='nearest')
+    # globals().update(locals())
+    if seg is not None:
+        reseg = map_coordinates(seg.astype(float), nr_mesh.transpose(-1,0,1,2), order=0, mode='constant', cval=0)
         return res, reseg
     return res
 
@@ -243,24 +250,6 @@ def random_ffd(l=5):
     ffd.array_mu_z += z_field
     return ffd
 
-def gca3D(**kwargs):
-    fig = plt.figure(figsize=(4,4), **kwargs)
-    return Axes3D(fig)
-
-def plt_ffd(ffd, interval=1):
-    fig = plt.figure(figsize=(4, 4))
-    ax = Axes3D(fig)
-    if isinstance(interval, int):
-        sl = np.s_[::interval, ::interval, ::interval]
-    else:
-        sl = interval
-    intrv = lambda x:x.reshape(*ffd.n_control_points, 3)[sl].reshape(-1,3)
-    ax.scatter(*intrv(ffd.control_points(False)).T, s=10, c='blue')
-    ax.scatter(*intrv(ffd.control_points()).T, s=5, c='red')
-    # plt_grid3d(ffd.control_points(False), ax, colors='blue')
-    plt_grid3d(intrv(ffd.control_points()), ax, colors='red', linewidths=0.5)
-    plt.show()
-
 def ffd_params(ffd):
     return np.array([*ffd.n_control_points, *ffd.box_origin, *ffd.box_length, *ffd.array_mu_x.flatten(), *ffd.array_mu_y.flatten(), *ffd.array_mu_z.flatten()])
 
@@ -272,8 +261,6 @@ def get_paste_seg(seg1, kseg2, f_bbox, o_bbox):
 
 # TODO: Add foldover check
 
-def draw_countour(ax, disp, levels=5):
-    return ax.contour(disp, levels=levels)
 
 #%%
 if __name__=='__main__':
@@ -304,8 +291,8 @@ if __name__=='__main__':
         h5_writer = h5py.File('/home/hynx/regis/Recursive-Cascaded-Networks/datasets/lits_deform_fL.h5', 'w')
     img_dir = '/home/hynx/regis/zFFD/'
     #%%
-    for id1 in id1s[:2]:
-        for id2 in id2s[:2]:
+    for id1 in id1s[:1]:
+        for id2 in id2s[:1]:
             print('\ndeforming organ {} for tumor {}'.format(id1, id2))
             img1 = dct[id1]['volume'][...]
             img2 = dct[id2]['volume'][...]
@@ -314,7 +301,7 @@ if __name__=='__main__':
 
             combine_pil_img(show_img(seg1), show_img(seg2), show_img(find_largest_component(seg2)[0])).save(img_dir+'img/{}-{}_seg.png'.format(id1, id2))
             combine_pil_img(show_img(img1), show_img(img2)).save(img_dir+'img/{}-{}_img.png'.format(id1, id2))
-            #%% stage 1
+            #@%% stage 1
             try:
                 kseg2, o_bbox, f_bbox, bbox = find_bbox(seg1, seg2, True)
             except ValueError as e:
@@ -336,7 +323,7 @@ if __name__=='__main__':
                 tumor_pts = tumor_pts[::tumor_pts.shape[0]//sample_num]
                 # tumor_pts = control_pts[seg_pts==2]
                 # calculate the distance between control points
-                dsp_matrix = - control_pts.reshape(-1, 3) + tumor_pts.reshape(-1, 3)[:, None]
+                dsp_matrix = control_pts.reshape(-1, 3) - tumor_pts.reshape(-1, 3)[:, None]
                 dsp_matrix /= ffd.box_length
                 # diagonal entries are the same point, and no need to calculate the distance
                 dst_matrix = (dsp_matrix**2).sum(axis=-1)
@@ -382,42 +369,37 @@ if __name__=='__main__':
             # ax.clabel(d, inline=True, fontsize=10)
             # ax.imshow(seg_pts[10], alpha=0.5)
             # plt.show()
-            # # %%
+            # %matplotlib widget
+            plt.figure()
+            ax = plt.gca()
+            # d = ax.contour(disp[95], levels=10)
+            # ax.clabel(d, inline=True, fontsize=10)
+            # ax.imshow(paste_seg2[95], alpha=0.6)
+            # plt.show()
+            # %%
             wpts = ffd_mesh(p_ffd, img1.shape)
             disp = calc_disp(wpts, axis=-1)
             print('max displacement', disp.max())
-            # %matplotlib widget
-            # ax = plt.gca()
-            # d = draw_countour(ax, disp[95], levels=10)
-            # ax.clabel(d, inline=True, fontsize=10)
-            # ax.imshow(paste_seg2[95], alpha=0.6)
-            # # ax.imshow(disp[100], alpha=0.4)
-            # plt.show()
             #%%
-            res, res_seg = do_ffd(p_ffd, img1, seg1)
-            feather_len = 5
+            res, res_seg = do_ffd(p_ffd, img1, seg1, reverse=True)
+            #%%
             # paste tumor
             # res1 = direct_paste()
+            feather_len = 5
             res1 = feathering_paste(feather_len, res, img2, kseg2, f_bbox, o_bbox)
             res_seg[paste_seg2==2]=2
-            ##%% just for validation
-            # res1 = res
-            # dres = draw_3dbox(res1, f_bbox[0], f_bbox[1])
-            # dimg2 = draw_3dbox(img2, o_bbox[0], o_bbox[1])
-            # combine_pil_img(show_img(dres), show_img(dimg2), show_img(res1))
-            # show_img(distance_transform_edt(kseg2!=2) - distance_transform_edt(kseg2==2))
-            # show_img(sdm(kseg2, feather_len))
-            # show_img(weight_kseg2*img2)
             #%% stage 2
             r_ffd = random_ffd() # l=5 the default settings
             # plt_ffd(ffd)
-            res2, res2_seg = do_ffd(r_ffd, res1, res_seg)
-
+            res2, res2_seg = do_ffd(r_ffd, res1, res_seg, reverse=True)
+            #%%
             mesh_pts = np.mgrid[0:128, 0:128, 0:128].reshape(3, -1).T.astype(float)
             # below the composition of flow
             ffd_pts = p_ffd(r_ffd(mesh_pts))
             ffd_pts = ffd_pts.reshape(128, 128, 128, 3)
-            # validate if the composite flow is right
+            res_gt = map_coordinates(res2, ffd_pts.transpose(-1,0,1,2), order=1, mode='nearest', cval=0)
+            # combo_imgs(res_gt, img1, res2)
+            #%% validate if the composite flow is right
             if validate:
                 val = map_coordinates(img1, ffd_pts.transpose(-1,0,1,2), order=3, mode='constant', cval=0)
                 valseg = map_coordinates(seg1, ffd_pts.transpose(-1,0,1,2), order=0, mode='constant', cval=0)
