@@ -124,8 +124,11 @@ def plt_img3d_show(imgs, cmap, intrv=5):
     plt.tight_layout()
     plt.show()
 
-def plt_img3d_axes(imgs, func, intrv=5):
-    fig, axes = plt.subplots((len(imgs+1))//(intrv**2), intrv)
+def plt_img3d_axes(imgs, func, intrv=5, fig=None):
+    if fig is None:
+        fig, axes = plt.subplots((len(imgs+1))//(intrv**2), intrv, )
+    else:
+        axes = fig.subplots((len(imgs+1))//(intrv**2), intrv)
     for ax, i in zip(axes.flatten(), range(0, len(imgs), intrv)):
         func(ax, i)
         # turnoff axis
@@ -134,5 +137,23 @@ def plt_img3d_axes(imgs, func, intrv=5):
         ax.set_title(f'{i}')
     # tight
     plt.tight_layout()
-    plt.show()
-    return plt
+    # plt.show()
+    return axes
+
+from networks.spatial_transformer import SpatialTransform
+import torch
+def cal_single_warped(flow, img):
+    if not isinstance(img, torch.Tensor):
+        img = torch.tensor(img)
+    img = img.float()
+    st = SpatialTransform(img.shape)
+    w_img = st(img[None,None], flow[None], mode='bilinear')
+    return w_img[0,0]
+
+from scipy.interpolate import griddata
+def cal_rev_flow(flow):
+    shape = flow.shape[:-1]
+    xi = np.mgrid[0:shape[0], 0:shape[1], 0:shape[2]].astype(np.float32).reshape(3, -1).T
+    points = xi+flow.reshape(-1, 3)
+    values = -flow.reshape(-1,3)
+    return griddata(points, values, xi, method='nearest').reshape(*shape)

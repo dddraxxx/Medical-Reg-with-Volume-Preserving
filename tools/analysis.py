@@ -6,11 +6,13 @@ import numpy as np
 import os
 from pathlib import Path as pa
 import sys
+
 sys.path.append('..')
 sys.path.append('.')
 from networks.spatial_transformer import SpatialTransform
 from utils import draw_seg_on_vol, show_img, visualize_3d, combo_imgs
 import torch
+import torch.nn.functional as F
 from thres_ffd import FFD_GT, cal_single_warped
 
 
@@ -48,6 +50,9 @@ if __name__ == '__main__':
     mode = 'normal'
     fname = '/home/hynx/regis/recursive-cascaded-networks/evaluations/Oct03_210121_masked_lits_d_.pkl'
     mode = 'mask'
+    # fname = '/home/hynx/regis/recursive-cascaded-networks/evaluations/Oct21_164855_mask_karea_lits_d_.pkl'
+    # mode = 'mask_karea'
+    # below: bad performance
     # fname = '/home/hynx/regis/recursive-cascaded-networks/evaluations/Oct11_183942_soft-m_lits_d_.pkl'
     # mode = 'soft_mask'
     # fname = '/home/hynx/regis/recursive-cascaded-networks/evaluations/Oct16_164126_normal_o.01_lits_d_.pkl'
@@ -72,7 +77,8 @@ if __name__ == '__main__':
         id2 = dct['id2'][idx]
         print('analyzing', id1, id2)
         reader.set_to(id1, id2);
-        gt_flow = reader.gt_flow
+        #%%
+        gt_flow = reader.return_flow()
         seg2 = reader.seg2
         seg1 = reader.seg1
 
@@ -89,28 +95,43 @@ if __name__ == '__main__':
 
         #%% 
         areas = abs(single_jacobian_det(agg_flow.transpose(3,0,1,2)))
-        values = np.percentile(areas, [85, 90, 95, 100])
-        q_areas = np.digitize(areas, values)
+        areas = torch.tensor(areas)
+        # get nxn neighbors of each voxel and avg areas
+        def neighbor_avg(arr, n):
+            arr = F.pad(torch.as_tensor(arr), pad=(n//2, n//2, n//2, n//2, n//2, n//2), mode='constant', value=0).unfold(0, n, 1).unfold(1, n, 1).unfold(2, n, 1)
+            return arr.mean(axis=(-1,-2,-3))
+        # nb_areas = neighbor_avg(areas, 20)
+        # areas[:5]=0
+        # areas[-5:]=0
+        # areas[:,:5]=0
+        # areas[:,-5:]=0
+        # areas[:,:,:5]=0
+        # areas[:,:,-5:]=0
+        nb_areas = neighbor_avg(areas, 10)
+        #%%
+        values = np.percentile(nb_areas, [80, 85, 90, 95, 100])
+        q_areas = np.digitize(nb_areas, values)
         from tools.utils import plt_img3d_axes
         def func_a(ax, i):
             # p = ax.imshow(np.exp(areas[i]), cmap='jet', alpha=.5)
             # plt.colorbar(p, ax=ax)
-            d = ax.contourf(areas[i], levels=values, linewidths=.8)
-            # ax.clabel(d, inline=True, fontsize=5)
+            ax.imshow(masks[2][i], cmap='jet', alpha=.5)
+            d = ax.contourf(nb_areas[i], levels=values[-2:], linewidths=.8, alpha=.5)
+            ax.clabel(d, inline=True, fontsize=5)
             ax.imshow(reader.img2[i], cmap='gray', alpha=.5)
-
+        # plt_img3d_axes(areas, func_a)
         #%% check r_ffd (larger disp than p_ffd)
-        r_ffd = reader.r_ffd
-        def ffd_flow(ffd, size):
-            pt = np.mgrid[0:size[0], 0:size[1], 0:size[2]].astype(np.float32).reshape(3, -1).T
-            flow = ffd(pt)-pt
-            flow = flow.T.reshape(3,*size)
-            return flow
-        r_ffd_flow = ffd_flow(r_ffd, seg2.shape)
-        p_ffd_flow = ffd_flow(reader.p_ffd, seg2.shape)
-        #%%
-        # np.histogram(r_ffd_flow)
-        show_img(np.linalg.norm(reader.gt_flow, axis=-1))
+        # r_ffd = reader.r_ffd
+        # def ffd_flow(ffd, size):
+        #     pt = np.mgrid[0:size[0], 0:size[1], 0:size[2]].astype(np.float32).reshape(3, -1).T
+        #     flow = ffd(pt)-pt
+        #     flow = flow.T.reshape(3,*size)
+        #     return flow
+        # r_ffd_flow = ffd_flow(r_ffd, seg2.shape)
+        # p_ffd_flow = ffd_flow(reader.p_ffd, seg2.shape)
+        # #%%
+        # # np.histogram(r_ffd_flow)
+        # show_img(np.linalg.norm(reader.gt_flow, axis=-1))
         # show_img(np.linalg.norm(p_ffd_flow, axis=0))
         # np.histogram(np.linalg.norm(r_ffd_flow, axis=0)),np.histogram(np.linalg.norm(p_ffd_flow, axis=0))
 

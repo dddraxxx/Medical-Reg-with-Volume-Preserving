@@ -33,8 +33,10 @@ parser.add_argument('--lr', type=float, default=1e-4)
 parser.add_argument('--debug', action='store_true', help="run the script without saving files")
 parser.add_argument('--name', type=str, default='')
 parser.add_argument('--ortho', type=float, default=0.1, help="use ortho loss")
-parser.add_argument('-m', '--masked', choices=['soft', 'seg'], default='',
+parser.add_argument('--keep_area', type=float, default=0, help="use keep-area loss")
+parser.add_argument('-m', '--masked', choices=['soft', 'seg', 'hard'], default='',
      help="mask the tumor part when calculating similarity loss")
+parser.add_argument('-mn', '--masked_neighbor', type=int, default=5, help="for masked neibor calculation")
 args = parser.parse_args()
 if args.gpu:
     os.environ["CUDA_VISIBLE_DEVICES"] = args.gpu
@@ -82,7 +84,7 @@ def main():
         segmentation_class_value=cfg.get('segmentation_class_value', {'unknown':1})
 
     model = RecursiveCascadeNetwork(n_cascades=args.n_cascades, im_size=image_size).cuda()
-    if args.masked == 'soft':
+    if args.masked == 'soft' or args.masked == 'hard':
         state_path = '/home/hynx/regis/recursive-cascaded-networks/ckp/model_wts/Sep27_145203_normal'
         stage1_model = RecursiveCascadeNetwork(n_cascades=args.n_cascades, im_size=image_size).cuda()
         load_model_from_dir(state_path, stage1_model)
@@ -161,23 +163,42 @@ def main():
                 assert mask.requires_grad == False
                 if args.masked == 'seg':
                     sim = masked_sim_loss(fixed, warped[-1], mask)
-                elif args.masked == 'soft':
-                    # to do: add soft mask about grid area change
+                elif args.masked == 'soft' or args.masked =='hard':
                     # get soft mask
                     with torch.no_grad():
                         _, _, s1_agg_flows = stage1_model(fixed, moving)
                     flow_det = jacobian_det(s1_agg_flows[-1].detach(), return_det=True)
                     flow_det = flow_det.unsqueeze(1).abs()
+                    # get n x n neighbors 
+                    n = args.masked_neighbor
+                    flow_det = F.avg_pool3d(flow_det, kernel_size=n*2-1, stride=1, divisor_override=1)
                     # resize
                     areas = F.interpolate(flow_det, size=fixed.shape[-3:], mode='trilinear', align_corners=False)
-                    # normalize soft mask
-                    w = torch.where(areas>1, 1/areas, areas)
-                    soft_mask = w/w.mean(dim=(2,3,4), keepdim=True)
-                    # soft mask * sim loss per pixel
-                    sim = masked_sim_loss(fixed, warped[-1], mask, soft_mask)
+                    if args.masked=='soft':
+                        # normalize soft mask
+                        w = torch.where(areas>1, 1/areas, areas)
+                        soft_mask = w/w.mean(dim=(2,3,4), keepdim=True)
+                        # soft mask * sim loss per pixel
+                        sim = masked_sim_loss(fixed, warped[-1], mask, soft_mask)
+                        # sim = masked_sim_loss(fixed, warped[-1], soft_mask.new_zeros(soft_mask.shape, dtype=bool), soft_mask)
+                    elif args.masked=='hard':
+                        areas[...,:n] = areas[...,-n:] = areas[...,:n,:] = areas[...,-n:,:] = areas[...,:n,:,:] = areas[...,-n:,:,:] = 0
+                        thres = torch.quantile(areas, .95)
+                        hard_mask = areas < thres
+                        # hard mask
+                        sim = masked_sim_loss(fixed, warped[-1], hard_mask)
+
 
             reg = reg_loss(flows[1:])
-            loss = sim+reg+det+ort
+            if args.keep_area>0:
+                kmask = seg2==2
+                det_flow = jacobian_det(agg_flows[-1], return_det=True).abs().clamp(min=0.1, max=10)
+                kmask = F.interpolate(kmask.float(), size=det_flow.shape[-3:], mode='trilinear', align_corners=False) > 0.5
+                det_flow = det_flow[kmask[:,0]]
+                area_loss = torch.where(det_flow>1, det_flow, 1/det_flow).mean() * args.keep_area
+            else:
+                area_loss = torch.zeros(1).cuda()
+            loss = sim+reg+det+ort+area_loss
             loss.backward()
             optim.step()
             # ddp reduce of loss
@@ -188,6 +209,7 @@ def main():
                 'reg_loss': reg.item(),
                 'ortho_loss': ort.item(),
                 'det_loss': det.item(),
+                'area_loss': area_loss.item(),
                 'loss': loss.item()
             }
 

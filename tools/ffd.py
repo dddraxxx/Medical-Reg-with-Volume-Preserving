@@ -172,7 +172,7 @@ def do_ffd(ffd, img, seg=None, order=1, reverse=False):
     res = map_coordinates(img, nr_mesh.transpose(-1,0,1,2), order=order, mode='nearest')
     # globals().update(locals())
     if seg is not None:
-        reseg = map_coordinates(seg.astype(float), nr_mesh.transpose(-1,0,1,2), order=0, mode='constant', cval=0)
+        reseg = map_coordinates(seg, nr_mesh.transpose(-1,0,1,2), order=0, mode='constant', cval=0)
         return res, reseg
     return res
 
@@ -286,13 +286,12 @@ if __name__=='__main__':
     # below tumor too large 
     # id2s = ['129', "33", "100", "108", "130", "4"]
     write_h5 = True
-    validate = False
     if write_h5:
         h5_writer = h5py.File('/home/hynx/regis/Recursive-Cascaded-Networks/datasets/lits_deform_fL.h5', 'w')
     img_dir = '/home/hynx/regis/zFFD/'
     #%%
-    for id1 in id1s[:1]:
-        for id2 in id2s[:1]:
+    for id1 in id1s[:3]:
+        for id2 in id2s[:2]:
             print('\ndeforming organ {} for tumor {}'.format(id1, id2))
             img1 = dct[id1]['volume'][...]
             img2 = dct[id2]['volume'][...]
@@ -399,20 +398,7 @@ if __name__=='__main__':
             ffd_pts = ffd_pts.reshape(128, 128, 128, 3)
             res_gt = map_coordinates(res2, ffd_pts.transpose(-1,0,1,2), order=1, mode='nearest', cval=0)
             # combo_imgs(res_gt, img1, res2)
-            #%% validate if the composite flow is right
-            if validate:
-                val = map_coordinates(img1, ffd_pts.transpose(-1,0,1,2), order=3, mode='constant', cval=0)
-                valseg = map_coordinates(seg1, ffd_pts.transpose(-1,0,1,2), order=0, mode='constant', cval=0)
-                print('Validate if the composite flow is right:')
-                print(abs(val.astype(int)-res2.astype(int)).max(), abs(res2).max(), img1.max())
-                print(np.histogram(abs(val.astype(int)-res2.astype(int)), 10))
-                print(abs(valseg.astype(int)-res2_seg.astype(int)).max(), abs(res2_seg).max(), seg1.max())
-                print(np.histogram(abs(valseg.astype(int)-res2_seg.astype(int)), 10))
-                show_img(abs(valseg.astype(int)-res2_seg.astype(int))).save('s.jpg')
-                # save img
-                im = combine_pil_img(show_img(val), show_img(valseg))
-                im.save(img_dir+'val/{}_{}.png'.format(id1, id2))
-
+            #%%
             im = combine_pil_img(show_img(img1), show_img(np.clip(res2,0,255)), show_img(res2_seg))
             im.save(img_dir+f'./deform/{id1}_{id2}.png')
 
