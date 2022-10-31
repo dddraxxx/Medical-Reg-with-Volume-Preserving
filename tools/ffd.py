@@ -11,7 +11,9 @@ from pathlib import Path as pa
 import pygem as pg
 from free_form_deformation import quick_FFD
 
-from utils import visualize_3d, tt, show_img, combine_pil_img
+import sys
+sys.path.append('../')
+from utils import visualize_3d, tt, show_img, combine_pil_img, plt_img3d_axes
 
 # calculate centroid of seg2
 def cal_centroid(seg2):
@@ -288,7 +290,10 @@ if __name__=='__main__':
     write_h5 = True
     if write_h5:
         h5_writer = h5py.File('/home/hynx/regis/Recursive-Cascaded-Networks/datasets/lits_deform_fL.h5', 'w')
-    img_dir = '/home/hynx/regis/zFFD/'
+    img_dir = '/home/hynx/regis/FFD_imgs/'
+    pa(img_dir).mkdir(exist_ok=True)
+    pa(img_dir+'img').mkdir(exist_ok=True)
+    pa(img_dir+'deform').mkdir(exist_ok=True)
     #%%
     for id1 in id1s[:3]:
         for id2 in id2s[:2]:
@@ -357,28 +362,21 @@ if __name__=='__main__':
                 return ffd
             paste_seg2 = get_paste_seg(seg1, kseg2, f_bbox, o_bbox)
             p_ffd = presure_ffd(bbox, paste_seg2, fct_low=0.5, fct_range=0, l=16, order=3.5, sample_num=1000)
-            #%% visualize pressure to the image
-            # %matplotlib widget
-            # plt_ffd(p_ffd, interval=np.s_[9:12,9:12,9:12])
-            # # %%
-            # plt.figure()
-            # ax = plt.gca()
-            # dsp_xyz = (dxyz**2).sum(0)
-            # d = ax.contour(dsp_xyz[10], levels=3)
-            # ax.clabel(d, inline=True, fontsize=10)
-            # ax.imshow(seg_pts[10], alpha=0.5)
-            # plt.show()
-            # %matplotlib widget
-            plt.figure()
-            ax = plt.gca()
-            # d = ax.contour(disp[95], levels=10)
-            # ax.clabel(d, inline=True, fontsize=10)
-            # ax.imshow(paste_seg2[95], alpha=0.6)
-            # plt.show()
             # %%
             wpts = ffd_mesh(p_ffd, img1.shape)
             disp = calc_disp(wpts, axis=-1)
             print('max displacement', disp.max())
+            #%% visualize pressure to the image
+            # %matplotlib widget
+            # plt.figure()
+            # ax = plt.gca()
+            def func(ax, i):
+                d = ax.contour(disp[i], levels=3)
+                ax.clabel(d, inline=True, fontsize=3)
+                ax.imshow(paste_seg2[i], alpha=0.6)
+            plt_img3d_axes(img1, func)
+            plt.savefig(img_dir+'img/{}-{}_disp.png'.format(id1, id2))
+            # plt.show()
             #%%
             res, res_seg = do_ffd(p_ffd, img1, seg1, reverse=True)
             #%%

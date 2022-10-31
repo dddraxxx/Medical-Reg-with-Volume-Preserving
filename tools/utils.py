@@ -140,6 +140,8 @@ def plt_img3d_axes(imgs, func, intrv=5, fig=None):
     # plt.show()
     return axes
 
+import sys
+sys.path.append(".")
 from networks.spatial_transformer import SpatialTransform
 import torch
 def cal_single_warped(flow, img):
