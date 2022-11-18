@@ -124,21 +124,21 @@ def plt_img3d_show(imgs, cmap, intrv=5):
     plt.tight_layout()
     plt.show()
 
-def plt_img3d_axes(imgs, func, intrv=5, fig=None):
+def plt_img3d_axes(imgs, func, intrv=5, fig=None, figsize=(10, 10), **kwargs):
     if fig is None:
-        fig, axes = plt.subplots((len(imgs+1))//(intrv**2), intrv, )
+        fig, axes = plt.subplots((len(imgs+1))//(intrv**2), intrv, figsize=figsize)
     else:
         axes = fig.subplots((len(imgs+1))//(intrv**2), intrv)
     for ax, i in zip(axes.flatten(), range(0, len(imgs), intrv)):
         func(ax, i)
         # turnoff axis
-        ax.axis('off')
+        # ax.axis('off')
         # title
         ax.set_title(f'{i}')
     # tight
     plt.tight_layout()
     # plt.show()
-    return axes
+    return axes, fig
 
 import sys
 sys.path.append(".")
@@ -147,7 +147,10 @@ import torch
 def cal_single_warped(flow, img):
     if not isinstance(img, torch.Tensor):
         img = torch.tensor(img)
+    if not isinstance(flow, torch.Tensor):
+        flow = torch.tensor(flow)
     img = img.float()
+    flow = flow.float()
     st = SpatialTransform(img.shape)
     w_img = st(img[None,None], flow[None], mode='bilinear')
     return w_img[0,0]
@@ -158,4 +161,4 @@ def cal_rev_flow(flow):
     xi = np.mgrid[0:shape[0], 0:shape[1], 0:shape[2]].astype(np.float32).reshape(3, -1).T
     points = xi+flow.reshape(-1, 3)
     values = -flow.reshape(-1,3)
-    return griddata(points, values, xi, method='nearest').reshape(*shape)
+    return griddata(points, values, xi, method='nearest').reshape(*flow.shape)

@@ -3,6 +3,7 @@ from typing import List
 import h5py
 import matplotlib
 import pygem as pg
+from utils import cal_rev_flow
 from free_form_deformation import quick_FFD
 import numpy as np
 from scipy.ndimage import map_coordinates
@@ -41,7 +42,8 @@ class FFD_GT:
         rpt = self.r_ffd(pt)
         disp = self.p_ffd(rpt)-rpt
         disp = disp.reshape(self.shape)
-        self.p_disp = np.linalg.norm(disp, axis=-1)
+        self.p_disp_rev = np.linalg.norm(disp, axis=-1)
+        self.set_pressured_flow()
         # get threshold
         self.thres = np.percentile(self.p_disp, 95)
 
@@ -54,17 +56,27 @@ class FFD_GT:
         ffd_gt = self.ffd_gt.reshape(ffd_re.shape)
         assert np.allclose(ffd_re, ffd_gt)
     
+    def set_pressured_flow(self):
+        pt = np.mgrid[0:self.shape[0], 0:self.shape[1], 0:self.shape[2]].astype(np.float32).reshape(3, -1).T
+        p_flow = self.p_ffd(pt)-pt
+        # cal rev p_flow
+        p_flow = p_flow.reshape(self.shape)
+        self.p_flow = cal_rev_flow(p_flow)
+        self.p_disp = np.linalg.norm(p_flow, axis=-1)
+        return self.p_flow
+
     def return_flow(self):
         '''return flow of ffd_gt'''
         return self.ffd_gt - np.moveaxis(np.mgrid[0:self.shape[0], 0:self.shape[1], 0:self.shape[2]], 0, -1)
     
-    def return_rev_flow(self):
+    def set_rev_flow(self):
         # get warping gt
         points = self.ffd_gt.reshape(-1,3)
         values = -self.return_flow().reshape(-1,3)
         xi = np.mgrid[0:self.shape[0], 0:self.shape[1], 0:self.shape[2]].astype(np.float32).reshape(3, -1).T
         self.rev_flow = griddata(points, values, xi, method='nearest').reshape(*self.shape)
-        return self.rev_flow
+        # copy np array flow and return
+        return self.rev_flow.copy()
     
     def __getattr__(self, name: str):
         if name in self.__dict__:
@@ -85,7 +97,7 @@ class FFD_GT:
             return img1[...]
     
     def get_masks(self, thres: List):
-        return [self.disp>t for t in thres]
+        return [self.p_disp>t for t in thres]
     
     def close(self):
         self.reader.close()
