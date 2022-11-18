@@ -148,9 +148,31 @@ class Data(Dataset):
         return ret
 
 if __name__ == '__main__':
-    data = Data('/home/hynx/regis/Recursive-Cascaded-Networks/datasets/liver_cust.json', scheme=1)
+    data = Data('/home/hynx/regis/Recursive-Cascaded-Networks/datasets/liver.json', scheme='sliver')
+    import sys
+    sys.path.append('.')
+    from tools.utils import show_img, combo_imgs
+    import matplotlib.pyplot as plt
+
     print(len(data))
-    for k in data[0]:
+    n = 110
+    for k in data[n]:
         if isinstance(data[0][k], np.ndarray):
             print(k, data[0][k].shape)
+    img1 = data[n]['voxel1'][0]
+    seg1 = data[n]['segmentation1'][0]
+    point1 = data[n]['point1'][0]
+    from PIL import Image, ImageDraw
+    ims = []
+    for p in point1:
+        x, y, z = p
+        im = show_img(img1[int(x)])
+        draw = ImageDraw.Draw(im)
+        draw.ellipse((y-5, z-5, y+5, z+5), fill='red')
+        ims.append(np.array(im))
+    print(point1)
+    # combo_imgs(img1, seg1).save('img1.png')
+    combo_imgs(img1, *ims).save('img1.png')
+
+
 

@@ -79,9 +79,9 @@ def jacobian_det(flow, return_det=False):
     """
     # Compute Jacobian determinant
     batch_size, _, height, width, depth = flow.size()
-    dx = flow[:, :, 1:, 1:, 1:] - flow[:, :, :-1, 1:, 1:] + 1
-    dy = flow[:, :, 1:, 1:, 1:] - flow[:, :, 1:, :-1, 1:] + 1
-    dz = flow[:, :, 1:, 1:, 1:] - flow[:, :, 1:, 1:, :-1] + 1
+    dx = flow[:, :, 1:, 1:, 1:] - flow[:, :, :-1, 1:, 1:] + flow.new_tensor([1., 0., 0.]).view(1, 3, 1, 1, 1)
+    dy = flow[:, :, 1:, 1:, 1:] - flow[:, :, 1:, :-1, 1:] + flow.new_tensor([0., 1., 0.]).view(1, 3, 1, 1, 1)
+    dz = flow[:, :, 1:, 1:, 1:] - flow[:, :, 1:, 1:, :-1] + flow.new_tensor([0., 0., 1.]).view(1, 3, 1, 1, 1) 
     jac = torch.stack([dx, dy, dz], dim=1).permute(0, 3, 4, 5, 1, 2)
     det = torch.det(jac)
     if return_det:

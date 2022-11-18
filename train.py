@@ -36,7 +36,7 @@ parser.add_argument('--ortho', type=float, default=0.1, help="use ortho loss")
 parser.add_argument('--keep_area', type=float, default=0, help="use keep-area loss")
 parser.add_argument('-m', '--masked', choices=['soft', 'seg', 'hard'], default='',
      help="mask the tumor part when calculating similarity loss")
-parser.add_argument('-mn', '--masked_neighbor', type=int, default=5, help="for masked neibor calculation")
+parser.add_argument('-mn', '--masked_neighbor', type=int, default=10, help="for masked neibor calculation")
 args = parser.parse_args()
 if args.gpu:
     os.environ["CUDA_VISIBLE_DEVICES"] = args.gpu
@@ -132,6 +132,7 @@ def main():
         vis_batch = []
         t0 = default_timer()
         for iteration, data in enumerate(train_loader):
+            log_scalars = {}
             model.train()
             iteration += 1
             t1 = default_timer()
@@ -154,14 +155,15 @@ def main():
             if not args.masked:
                 sim = sim_loss(fixed, warped[-1])
             else:
-                # caluculate mask
-                t_seg2 = seg2==2
-                # need torch no grad: Yes
-                with torch.no_grad():
-                    warped_tseg = mmodel.reconstruction(t_seg2.float(), agg_flows[-1])
-                mask = (warped_tseg > 0.5) | (seg1==2)
-                assert mask.requires_grad == False
                 if args.masked == 'seg':
+                    # caluculate mask
+                    t_seg2 = seg2==2
+                    # need torch no grad: Yes
+                    with torch.no_grad():
+                        warped_tseg = mmodel.reconstruction(t_seg2.float(), agg_flows[-1])
+                    mask = (warped_tseg > 0.5) | (seg1==2)
+                    assert mask.requires_grad == False
+
                     sim = masked_sim_loss(fixed, warped[-1], mask)
                 elif args.masked == 'soft' or args.masked =='hard':
                     # get soft mask
@@ -182,15 +184,27 @@ def main():
                         sim = masked_sim_loss(fixed, warped[-1], mask, soft_mask)
                         # sim = masked_sim_loss(fixed, warped[-1], soft_mask.new_zeros(soft_mask.shape, dtype=bool), soft_mask)
                     elif args.masked=='hard':
+                        areas = torch.where(areas>1, areas, 1/areas)
+                        areas.clamp_(max=10)
                         areas[...,:n] = areas[...,-n:] = areas[...,:n,:] = areas[...,-n:,:] = areas[...,:n,:,:] = areas[...,-n:,:,:] = 0
-                        thres = torch.quantile(areas, .95)
+                        areas
+                        thres = torch.quantile(areas, .9)
+                        # log thres
+                        log_scalars['hard_mask_thres'] = thres
                         hard_mask = areas < thres
+                        # caluculate mask
+                        mask = (seg2==2) | hard_mask
+                        # need torch no grad: Yes
+                        with torch.no_grad():
+                            warped_mask = mmodel.reconstruction(mask.float(), agg_flows[-1])
+                        merged_mask = (warped_mask > 0.5) | mask | (seg1==2)
+                        assert mask.requires_grad == False
                         # hard mask
-                        sim = masked_sim_loss(fixed, warped[-1], hard_mask)
+                        sim = masked_sim_loss(fixed, warped[-1], merged_mask)
 
 
             reg = reg_loss(flows[1:])
-            if args.keep_area>0:
+            if args.keep_area!=0:
                 kmask = seg2==2
                 det_flow = jacobian_det(agg_flows[-1], return_det=True).abs().clamp(min=0.1, max=10)
                 kmask = F.interpolate(kmask.float(), size=det_flow.shape[-3:], mode='trilinear', align_corners=False) > 0.5
@@ -248,6 +262,8 @@ def main():
                     for k in loss_dict:
                         writer.add_scalar('train/'+k, loss_dict[k], epoch * len(train_loader) + iteration)
                     writer.add_scalar('train/lr', lr, epoch * len(train_loader) + iteration)
+                    for k in log_scalars:
+                        writer.add_scalar('train/'+k, log_scalars[k], epoch * len(train_loader) + iteration)
 
                 if iteration%args.val_steps==0 or args.debug:
                     print(f">>>>> Validation <<<<<")
