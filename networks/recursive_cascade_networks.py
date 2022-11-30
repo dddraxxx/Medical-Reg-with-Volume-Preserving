@@ -1,18 +1,19 @@
 from .transform import sample_power, free_form_fields
 from .base_networks import *
-from .spatial_transformer import SpatialTransform
+from .layers import SpatialTransformer
 
 class RecursiveCascadeNetwork(nn.Module):
-    def __init__(self, n_cascades, im_size=(512, 512)):
+    def __init__(self, n_cascades, im_size=(512, 512), base_network='VTN'):
         super(RecursiveCascadeNetwork, self).__init__()
 
         device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         self.stems = nn.ModuleList()
         # See note in base_networks.py about the assumption in the image shape
-        # to do: get same network as in official tf implementation
         self.stems.append(VTNAffineStem(dim=len(im_size), im_size=im_size[0]))
+        assert base_network in BASE_NETWORK
+        base = eval(base_network)
         for i in range(n_cascades):
-            self.stems.append(VTN(dim=len(im_size), flow_multiplier=1.0 / n_cascades))
+            self.stems.append(base(im_size=im_size, flow_multiplier=1.0 / n_cascades))
 
         # Parallelize across all available GPUs
         # if torch.cuda.device_count() > 1:
@@ -21,7 +22,7 @@ class RecursiveCascadeNetwork(nn.Module):
         for model in self.stems:
             model.to(device)
 
-        self.reconstruction = SpatialTransform(im_size)
+        self.reconstruction = SpatialTransformer(im_size)
         # self.reconstruction = nn.DataParallel(self.reconstruction)
         self.reconstruction.to(device)
 
@@ -43,7 +44,7 @@ class RecursiveCascadeNetwork(nn.Module):
                 if module.bias is not None:
                     torch.nn.init.zeros_(module.bias)
 
-    def forward(self, fixed, moving, return_affine=False):
+    def forward(self, fixed, moving, return_affine=False, return_nonaffine=False):
         flows = []
         stem_results = []
         agg_flows = []
@@ -64,9 +65,10 @@ class RecursiveCascadeNetwork(nn.Module):
                 agg_flow = self.reconstruction(agg_flows[-1], flow) + flow
             agg_flows.append(agg_flow)
             stem_results.append(self.reconstruction(moving, agg_flow))
+        returns = [stem_results, flows, agg_flows]
         if return_affine:
-            return stem_results, flows, agg_flows, affine_params
-        return stem_results, flows, agg_flows
+            returns.append(affine_params)
+        return returns
 
     def augment(self, img2: torch.Tensor, seg2: torch.Tensor):
         bs, c, h, w, s = img2.shape

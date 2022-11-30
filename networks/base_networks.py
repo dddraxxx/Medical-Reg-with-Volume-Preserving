@@ -2,7 +2,11 @@ import torch
 import torch.nn as nn
 from torch.nn import ReLU, LeakyReLU
 import torch.nn.functional as F
+from torch.distributions.normal import Normal
+from . import layers
+import numpy as np
 
+BASE_NETWORK = ['VTN', 'VXM']
 
 def conv(dim=2):
     if dim == 2:
@@ -25,8 +29,8 @@ def convolveReLU(in_channels, out_channels, kernel_size, stride, dim=2):
     return nn.Sequential(ReLU, convolve(in_channels, out_channels, kernel_size, stride, dim=dim))
 
 
-def convolveLeakyReLU(in_channels, out_channels, kernel_size, stride, dim=2):
-    return nn.Sequential(LeakyReLU(0.1), convolve(in_channels, out_channels, kernel_size, stride, dim=dim))
+def convolveLeakyReLU(in_channels, out_channels, kernel_size, stride, dim=2, leakyr_slope=0.1):
+    return nn.Sequential(LeakyReLU(leakyr_slope), convolve(in_channels, out_channels, kernel_size, stride, dim=dim))
 
 
 def upconvolve(in_channels, out_channels, kernel_size, stride, dim=2):
@@ -39,6 +43,13 @@ def upconvolveReLU(in_channels, out_channels, kernel_size, stride, dim=2):
 
 def upconvolveLeakyReLU(in_channels, out_channels, kernel_size, stride, dim=2):
     return nn.Sequential(LeakyReLU(0.1), upconvolve(in_channels, out_channels, kernel_size, stride, dim=dim))
+
+def default_unet_features():
+    nb_features = [
+        [16, 32, 32, 32],
+        [32, 32, 32, 32, 16, 16]
+    ]
+    return nb_features
 
 class Unet(nn.Module):
     """
@@ -87,7 +98,7 @@ class Unet(nn.Module):
         prev_nf = 2
         self.downarm = nn.ModuleList()
         for nf in self.enc_nf:
-            self.downarm.append(ConvBlock(ndims, prev_nf, nf, stride=2))
+            self.downarm.append(convolveLeakyReLU(prev_nf, nf, dim=ndims, kernel_size=3, stride=2, leakyr_slope=0.2))
             prev_nf = nf
 
         # configure decoder (up-sampling path)
@@ -95,14 +106,14 @@ class Unet(nn.Module):
         self.uparm = nn.ModuleList()
         for i, nf in enumerate(self.dec_nf[:len(self.enc_nf)]):
             channels = prev_nf + enc_history[i] if i > 0 else prev_nf
-            self.uparm.append(ConvBlock(ndims, channels, nf, stride=1))
+            self.uparm.append(convolveLeakyReLU(channels, nf, dim=ndims, kernel_size=3, stride=1, leakyr_slope=0.2))
             prev_nf = nf
 
         # configure extra decoder convolutions (no up-sampling)
         prev_nf += 2
         self.extras = nn.ModuleList()
         for nf in self.dec_nf[len(self.enc_nf):]:
-            self.extras.append(ConvBlock(ndims, prev_nf, nf, stride=1))
+            self.extras.append(convolveLeakyReLU(prev_nf, nf, dim=ndims, kernel_size=3, stride=1, leakyr_slope=0.2))
             prev_nf = nf
  
     def forward(self, x):
@@ -125,15 +136,15 @@ class Unet(nn.Module):
 
         return x
 
-import layers
-class VxmDense(nn.Module):
+class VXM(nn.Module):
     """
     VoxelMorph network for (unsupervised) nonlinear registration between two images.
     """
 
     # @store_config_args
     def __init__(self,
-        inshape,
+        im_size,
+        flow_multiplier=1,
         nb_unet_features=None,
         nb_unet_levels=None,
         unet_feat_mult=1,
@@ -157,16 +168,13 @@ class VxmDense(nn.Module):
         """
         super().__init__()
 
-        # internal flag indicating whether to return flow or integrated warp during inference
-        self.training = True
-
         # ensure correct dimensionality
-        ndims = len(inshape)
+        ndims = len(im_size)
         assert ndims in [1, 2, 3], 'ndims should be one of 1, 2, or 3. found: %d' % ndims
 
         # configure core unet model
         self.unet_model = Unet(
-            inshape,
+            im_size,
             nb_features=nb_unet_features,
             nb_levels=nb_unet_levels,
             feat_mult=unet_feat_mult
@@ -193,18 +201,18 @@ class VxmDense(nn.Module):
         self.bidir = bidir
 
         # configure optional integration layer for diffeomorphic warp
-        down_shape = [int(dim / int_downsize) for dim in inshape]
+        down_shape = [int(dim / int_downsize) for dim in im_size]
         self.integrate = layers.VecInt(down_shape, int_steps) if int_steps > 0 else None
 
         # configure transformer
-        self.transformer = layers.SpatialTransformer(inshape)
+        # self.transformer = layers.SpatialTransformer(inshape)
+        self.flow_multiplier = flow_multiplier
 
-    def forward(self, source, target, registration=False):
+    def forward(self, source, target, return_preint=False):
         '''
         Parameters:
             source: Source image tensor.
             target: Target image tensor.
-            registration: Return transformed image and flow. Default is False.
         '''
 
         # concatenate inputs and propagate unet
@@ -233,27 +241,24 @@ class VxmDense(nn.Module):
             if self.fullsize:
                 pos_flow = self.fullsize(pos_flow)
                 neg_flow = self.fullsize(neg_flow) if self.bidir else None
-
-        # warp image with flow field
-        y_source = self.transformer(source, pos_flow)
-        y_target = self.transformer(target, neg_flow) if self.bidir else None
-
-        # return non-integrated flow field if training
-        if not registration:
-            return (y_source, y_target, preint_flow) if self.bidir else (y_source, preint_flow)
-        else:
-            return y_source, pos_flow
+        
+        returns = [pos_flow]
+        if self.bidir: returns.append(neg_flow)
+        if return_preint: returns.append(preint_flow)
+        returns = [r*self.flow_multiplier for r in returns]
+        return returns if len(returns)>1 else returns[0]
+        
 
 class VTN(nn.Module):
-    def __init__(self, dim=2, flow_multiplier=1., channels=16):
+    def __init__(self, im_size=(128,128,128), flow_multiplier=1., channels=16, in_channels=2):
         super(VTN, self).__init__()
         self.flow_multiplier = flow_multiplier
         self.channels = channels
-        self.dim = dim
+        self.dim = dim = len(im_size)
 
         # Network architecture
         # The first convolution's input is the concatenated image
-        self.conv1 = convolveLeakyReLU(2, channels, 3, 2, dim=dim)
+        self.conv1 = convolveLeakyReLU(in_channels, channels, 3, 2, dim=dim)
         self.conv2 = convolveLeakyReLU(channels, 2 * channels, 3, 2, dim=dim)
         self.conv3 = convolveLeakyReLU(2 * channels, 4 * channels, 3, 2, dim=dim)
         self.conv3_1 = convolveLeakyReLU(4 * channels, 4 * channels, 3, 1, dim=dim)
@@ -412,6 +417,7 @@ class VTNAffineStem(nn.Module):
 
 if __name__ == "__main__":
     vtn_model = VTN(dim=3)
+    vxm_model = VXM
     vtn_affine_model = VTNAffineStem(dim=3, im_size=512)
     x = torch.randn(1, 1, 512, 512, 512)
     y1 = vtn_model(x, x)

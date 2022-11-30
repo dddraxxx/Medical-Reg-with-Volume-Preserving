@@ -142,7 +142,7 @@ def plt_img3d_axes(imgs, func, intrv=5, fig=None, figsize=(10, 10), **kwargs):
 
 import sys
 sys.path.append(".")
-from networks.spatial_transformer import SpatialTransform
+from networks.layers import SpatialTransformer
 import torch
 def cal_single_warped(flow, img):
     if not isinstance(img, torch.Tensor):
@@ -151,7 +151,7 @@ def cal_single_warped(flow, img):
         flow = torch.tensor(flow)
     img = img.float()
     flow = flow.float()
-    st = SpatialTransform(img.shape)
+    st = SpatialTransformer(img.shape)
     w_img = st(img[None,None], flow[None], mode='bilinear')
     return w_img[0,0]
 

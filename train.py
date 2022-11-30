@@ -3,7 +3,7 @@ import json
 import argparse
 import os
 import time
-from tools.utils import load_model_from_dir
+from tools.utils import load_model_from_dir, load_model
 import torch
 from torch.functional import F
 from networks.recursive_cascade_networks import RecursiveCascadeNetwork
@@ -20,12 +20,14 @@ from torch.nn.parallel import DistributedDataParallel as DDP
 
 parser = argparse.ArgumentParser()
 parser.add_argument('-b', "--batch_size", type=int, default=4)
+parser.add_argument('-base', '--base_network', type=str, default='VTN')
 parser.add_argument('-n', "--n_cascades", type=int, default=3)
 parser.add_argument('-e', "--epochs", type=int, default=5)
 parser.add_argument("--round", type=int, default=20000)
 parser.add_argument("-v", "--val_steps", type=int, default=1000)
 parser.add_argument('-cf', "--checkpoint_frequency", default=0.5, type=float)
 parser.add_argument('-c', "--checkpoint", type=str, default=None)
+parser.add_argument('-ct', '--continue_training', action='store_true')
 parser.add_argument('--fixed_sample', type=int, default=100)
 parser.add_argument('-g', '--gpu', type=str, default='', help='GPU to use')
 parser.add_argument('-d', '--dataset', type=str, default='datasets/liver_cust.json', help='Specifies a data config')
@@ -33,7 +35,9 @@ parser.add_argument('--lr', type=float, default=1e-4)
 parser.add_argument('--debug', action='store_true', help="run the script without saving files")
 parser.add_argument('--name', type=str, default='')
 parser.add_argument('--ortho', type=float, default=0.1, help="use ortho loss")
-parser.add_argument('--keep_area', type=float, default=0, help="use keep-area loss")
+parser.add_argument('--det', type=float, default=0.1, help="use det loss")
+parser.add_argument('--keep_size', type=float, default=0, help="use keep-size loss")
+parser.add_argument('--size_type', choices=['smooth', 'organ', 'constant'], default='organ')
 parser.add_argument('-m', '--masked', choices=['soft', 'seg', 'hard'], default='',
      help="mask the tumor part when calculating similarity loss")
 parser.add_argument('-mn', '--masked_neighbor', type=int, default=10, help="for masked neibor calculation")
@@ -61,20 +65,22 @@ def main():
     dt = datetime.datetime.now(tz=datetime.timezone(datetime.timedelta(hours=8)))
     run_id = dt.strftime('%b%d_%H%M%S') + (args.name and '_' + args.name)
 
-    if not os.path.exists('./ckp/model_wts/'):
-        print("Creating ckp dir")
-        os.makedirs('./ckp/model_wts/')
     ckp_freq = int(args.checkpoint_frequency * args.round)
 
-    if not os.path.exists('./ckp/visualization'):
-        print("Creating visualization dir")
-        os.makedirs('./ckp/visualization')
+    # if not os.path.exists('./ckp/visualization'):
+    #     print("Creating visualization dir")
+    #     os.makedirs('./ckp/visualization')
 
     # mkdirs for log
     if not args.debug:
+        print("Creating log dir")
         log_dir = os.path.join('./logs', run_id)
         os.path.exists(log_dir) or os.makedirs(log_dir)
         writer = SummaryWriter(log_dir=log_dir)
+        if not os.path.exists(log_dir+'/model_wts/'):
+            print("Creating ckp dir")
+            os.makedirs(log_dir+'/model_wts/')
+            ckp_dir = log_dir+'/model_wts/'
 
     # read config
     with open(args.dataset, 'r') as f:
@@ -83,15 +89,22 @@ def main():
         image_type = cfg.get('image_type', None)
         segmentation_class_value=cfg.get('segmentation_class_value', {'unknown':1})
 
-    model = RecursiveCascadeNetwork(n_cascades=args.n_cascades, im_size=image_size).cuda()
+    model = RecursiveCascadeNetwork(n_cascades=args.n_cascades, im_size=image_size, base_network=args.base_network).cuda()
     if args.masked == 'soft' or args.masked == 'hard':
         state_path = '/home/hynx/regis/recursive-cascaded-networks/ckp/model_wts/Sep27_145203_normal'
-        stage1_model = RecursiveCascadeNetwork(n_cascades=args.n_cascades, im_size=image_size).cuda()
+        stage1_model = RecursiveCascadeNetwork(n_cascades=args.n_cascades, im_size=image_size, base_network='VTN').cuda()
         load_model_from_dir(state_path, stage1_model)
     # add checkpoint loading
+    start_epoch = 0
     if args.checkpoint:
         print("Loading checkpoint from {}".format(args.checkpoint))
-        model.load_state_dict(torch.load(args.checkpoint))
+        if os.path.isdir(args.checkpoint):
+            load_model_from_dir(args.checkpoint, model)
+        else: load_model(args.checkpoint, model)
+        if args.continue_training:
+            print("Continue training from checkpoint")
+            start_epoch = torch.load(args.checkpoint)['epoch']        
+        
     if dist.is_initialized():
         model = DDP(model, device_ids=[local_rank], output_device=local_rank)
         mmodel = model.module
@@ -99,7 +112,6 @@ def main():
     trainable_params = []
     for submodel in mmodel.stems:
         trainable_params += list(submodel.parameters())
-
     trainable_params += list(mmodel.reconstruction.parameters())
 
     lr = args.lr
@@ -125,7 +137,7 @@ def main():
     reg_loss_log = []
     val_loss_log = []
     max_seg = max(segmentation_class_value.values())
-    for epoch in range(0, args.epochs):
+    for epoch in range(start_epoch, args.epochs):
         print(f"-----Epoch {epoch+1} / {args.epochs}-----")
         train_epoch_loss = 0
         train_reg_loss = 0
@@ -147,7 +159,7 @@ def main():
             warped, flows, agg_flows, affine_params = model(fixed, moving, return_affine=True)
 
             # affine loss
-            ortho_factor, det_factor = args.ortho, 0.1
+            ortho_factor, det_factor = args.ortho, args.det
             A = affine_params['theta'][..., :3, :3]
             ort = ortho_factor * ortho_loss(A)
             det = det_factor * det_loss(A)
@@ -155,64 +167,63 @@ def main():
             if not args.masked:
                 sim = sim_loss(fixed, warped[-1])
             else:
-                if args.masked == 'seg':
-                    # caluculate mask
-                    t_seg2 = seg2==2
-                    # need torch no grad: Yes
-                    with torch.no_grad():
-                        warped_tseg = mmodel.reconstruction(t_seg2.float(), agg_flows[-1])
-                    mask = (warped_tseg > 0.5) | (seg1==2)
-                    assert mask.requires_grad == False
-
+                # caluculate mask
+                t_seg2 = seg2==2
+                # need torch no grad: Yes
+                with torch.no_grad():
+                    warped_tseg = mmodel.reconstruction(t_seg2.float(), agg_flows[-1])
+                mask = (warped_tseg > 0.5) | (seg1==2)
+                assert mask.requires_grad == False
+                if args.masked == 'seg': #or (args.masked=='hard' and epoch<=args.epochs*0.5):
                     sim = masked_sim_loss(fixed, warped[-1], mask)
                 elif args.masked == 'soft' or args.masked =='hard':
                     # get soft mask
                     with torch.no_grad():
                         _, _, s1_agg_flows = stage1_model(fixed, moving)
+                    # todo: s1_agg_flows should be reversed
                     flow_det = jacobian_det(s1_agg_flows[-1].detach(), return_det=True)
                     flow_det = flow_det.unsqueeze(1).abs()
                     # get n x n neighbors 
                     n = args.masked_neighbor
                     flow_det = F.avg_pool3d(flow_det, kernel_size=n*2-1, stride=1, divisor_override=1)
                     # resize
-                    areas = F.interpolate(flow_det, size=fixed.shape[-3:], mode='trilinear', align_corners=False)
+                    sizes = F.interpolate(flow_det, size=fixed.shape[-3:], mode='trilinear', align_corners=False)
+                    log_scalars['size_quantile_0.9'] = torch.quantile(sizes, .9)
+                    log_scalars['size_quantile_0.1'] = torch.quantile(sizes, .1)
                     if args.masked=='soft':
                         # normalize soft mask
-                        w = torch.where(areas>1, 1/areas, areas)
+                        w = torch.where(sizes>1, 1/sizes, sizes)
                         soft_mask = w/w.mean(dim=(2,3,4), keepdim=True)
                         # soft mask * sim loss per pixel
                         sim = masked_sim_loss(fixed, warped[-1], mask, soft_mask)
                         # sim = masked_sim_loss(fixed, warped[-1], soft_mask.new_zeros(soft_mask.shape, dtype=bool), soft_mask)
-                    elif args.masked=='hard':
-                        areas = torch.where(areas>1, areas, 1/areas)
-                        areas.clamp_(max=10)
-                        areas[...,:n] = areas[...,-n:] = areas[...,:n,:] = areas[...,-n:,:] = areas[...,:n,:,:] = areas[...,-n:,:,:] = 0
-                        areas
-                        thres = torch.quantile(areas, .9)
-                        # log thres
-                        log_scalars['hard_mask_thres'] = thres
-                        hard_mask = areas < thres
-                        # caluculate mask
-                        mask = (seg2==2) | hard_mask
-                        # need torch no grad: Yes
+                    elif args.masked=='hard':# and epoch>args.epochs*0.5:
+                        w_n = torch.where(sizes>1, sizes, 1/sizes)
+                        # margin value should be set as argument
+                        w_n[...,:n] = w_n[...,-n:] = w_n[...,:n,:] = w_n[...,-n:,:] = w_n[...,:n,:,:] = w_n[...,-n:,:,:] = 0
+                        thres = 2 # thres = torch.quantile(w_n, .9)
+                        hard_mask = w_n < thres
                         with torch.no_grad():
-                            warped_mask = mmodel.reconstruction(mask.float(), agg_flows[-1])
-                        merged_mask = (warped_mask > 0.5) | mask | (seg1==2)
-                        assert mask.requires_grad == False
-                        # hard mask
+                            warped_hard_mask = mmodel.reconstruction(hard_mask.float(), agg_flows[-1])
+                        merged_mask = (warped_hard_mask > 0.5) | (hard_mask) | mask
+                        assert merged_mask.requires_grad == False
                         sim = masked_sim_loss(fixed, warped[-1], merged_mask)
 
-
             reg = reg_loss(flows[1:])
-            if args.keep_area!=0:
-                kmask = seg2==2
-                det_flow = jacobian_det(agg_flows[-1], return_det=True).abs().clamp(min=0.1, max=10)
+            if args.keep_size!=0:
+                # nonaffine_flow = flows[1]
+                # for flow in flows[2:]:
+                #     nonaffine_flow = mmodel.reconstruction(nonaffine_flow, flow) + flow
+                if args.size_type=='constant': ratio = 1
+                elif args.size_type=='organ': ratio = (seg1==1).sum()/(seg2==1).sum()
+                kmask = warped_tseg > .5
+                det_flow = jacobian_det(agg_flows[-1], return_det=True).abs().clamp(min=1/3, max=3)
                 kmask = F.interpolate(kmask.float(), size=det_flow.shape[-3:], mode='trilinear', align_corners=False) > 0.5
                 det_flow = det_flow[kmask[:,0]]
-                area_loss = torch.where(det_flow>1, det_flow, 1/det_flow).mean() * args.keep_area
+                size_change = torch.where(det_flow>ratio, det_flow/ratio, ratio/det_flow).mean() * args.keep_size
             else:
-                area_loss = torch.zeros(1).cuda()
-            loss = sim+reg+det+ort+area_loss
+                size_change = torch.zeros(1).cuda()
+            loss = sim+reg+det+ort+size_change
             loss.backward()
             optim.step()
             # ddp reduce of loss
@@ -223,7 +234,7 @@ def main():
                 'reg_loss': reg.item(),
                 'ortho_loss': ort.item(),
                 'det_loss': det.item(),
-                'area_loss': area_loss.item(),
+                'keep_size_loss': size_change.item(),
                 'loss': loss.item()
             }
 
@@ -257,6 +268,10 @@ def main():
                         with torch.no_grad():
                             w_seg2 = mmodel.reconstruction(seg2, agg_flows[-1])
                         writer.add_image('train/w_seg2', w_seg2[0, :, 64]/max_seg, epoch * len(train_loader) + iteration)
+                        # add sizes and hard mask
+                        if 'sizes' in locals() and 'hard_mask' in locals():
+                            writer.add_image('train/grid_sizes', sizes[0, 0, :, 64], epoch * len(train_loader) + iteration)
+                            writer.add_image('train/hard_mask', hard_mask[0, 0, :, 64], epoch * len(train_loader) + iteration)
 
                 if not args.debug:
                     for k in loss_dict:
@@ -331,7 +346,7 @@ def main():
                 ckp['val_loss'] = val_loss_log
                 ckp['epoch'] = epoch
 
-                torch.save(ckp, f'./ckp/model_wts/{run_id}/epoch_{epoch}_iter_{iteration}.pth')
+                torch.save(ckp, f'{ckp_dir}/epoch_{epoch}_iter_{iteration}.pth')
 
             t0 = default_timer()   
         scheduler.step()

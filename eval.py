@@ -29,6 +29,7 @@ parser.add_argument('--data_args', type=str, default=None)
 parser.add_argument('--net_args', type=str, default=None)
 parser.add_argument('--name', type=str, default=None)
 parser.add_argument('-s','--save_pkl', action='store_true', help='Save the results as a pkl file')
+parser.add_argument('-base', '--base_network', type=str, default='VTN')
 args = parser.parse_args()
 
 if args.gpu:
@@ -45,7 +46,7 @@ def main():
     val_dataset = Data(args.dataset, scheme=args.val_subset or Split.VALID)
     val_loader = DataLoader(val_dataset, batch_size=args.batch_size, num_workers=min(8, args.batch_size), shuffle=False)
     # build framework
-    model = RecursiveCascadeNetwork(n_cascades=args.n_cascades, im_size=image_size).cuda()
+    model = RecursiveCascadeNetwork(n_cascades=args.n_cascades, im_size=image_size, base_network=args.base_network).cuda()
     # add checkpoint loading
     print("Loading checkpoint from {}".format(args.checkpoint))
     from tools.utils import load_model, load_model_from_dir
@@ -93,6 +94,7 @@ def main():
                 results[key] = []
             results[key].extend(dice.cpu().numpy())
             dices.append(dice.cpu().numpy())
+        del fixed, moving, warped, flows, agg_flows, affine_params
         # get mean of dice class
         results['dices'].extend(np.mean(dices, axis=0)) 
 
