@@ -9,7 +9,7 @@ import sys
 
 sys.path.append('..')
 sys.path.append('.')
-from networks.spatial_transformer import SpatialTransform
+from networks.layers import SpatialTransformer
 from utils import cal_rev_flow, draw_seg_on_vol, show_img, visualize_3d, combo_imgs, cal_single_warped
 import torch
 import torch.nn.functional as F
@@ -25,7 +25,7 @@ def eP2P(flow, gt, mask):
     return err
 
 def cal_warped_seg(agg_flows, seg2):
-    st = SpatialTransform(seg2[0,0].shape)
+    st = SpatialTransformer(seg2[0,0].shape)
     w_segs = st(seg2, agg_flows, mode='nearest')
     return w_segs
 
@@ -72,17 +72,22 @@ def single_grid_volumes(flow):
 if __name__ == '__main__':
     import matplotlib.pyplot as plt
     #%%
-    fname = '/home/hynx/regis/recursive-cascaded-networks/evaluations/Sep27_145203_normal_lits_d_.pkl'
+    fname = '/home/hynx/regis/recursive-cascaded-networks/evaluations/Dec06_012136_normal-vtn_lits_d_.pkl'
+    fname = '/home/hynx/regis/recursive-cascaded-networks/evaluations/Dec06_012136_normal-vtn_mini-val_.pkl'
     mode = 'normal'
     # fname = '/home/hynx/regis/recursive-cascaded-networks/evaluations/Oct03_210121_masked_lits_d_.pkl'
     # mode = 'mask'
-    # fname = '/home/hynx/regis/recursive-cascaded-networks/evaluations/Oct21_164855_mask_karea_lits_d_.pkl'
-    # mode = 'mask_karea'
+    # fname = '/home/hynx/regis/recursive-cascaded-networks/evaluations/Dec06_043431_msk-ks-vtn_lits_d_.pkl'
+    # mode = 'mask_ks'
     # below: bad performance
     # fname = '/home/hynx/regis/recursive-cascaded-networks/evaluations/Oct11_183942_soft-m_lits_d_.pkl'
     # mode = 'soft_mask'
     # fname = '/home/hynx/regis/recursive-cascaded-networks/evaluations/Oct16_164126_normal_o.01_lits_d_.pkl'
     # mode = 'normal_o.01'
+    # fname = '/home/hynx/regis/recursive-cascaded-networks/evaluations/Nov26_030214_normal-vxm_lits_d_.pkl'
+    # mode = 'vxm'
+    # fname = '/home/hynx/regis/recursive-cascaded-networks/evaluations/Dec06_050505_hard-ks-vtn_lits_d_.pkl'
+    # mode = 'hard-ks'
 
     dct = pkl.load(open(fname, 'rb'))
     print(dct.keys())
@@ -94,7 +99,7 @@ if __name__ == '__main__':
     h5_name = '/home/hynx/regis/recursive-cascaded-networks/datasets/lits_deform_fL.h5'
     reader = FFD_GT(h5_name)
 
-    save_im = True
+    save_im = False
     # for idx in range(len(dct['id1'])):
     for idx in [0]:
         agg_flow = dct['agg_flows'][idx][-1].permute(1,2,3,0).numpy()
@@ -116,10 +121,17 @@ if __name__ == '__main__':
         normal_w_img2 = cal_single_warped(agg_flow.transpose(3,0,1,2), img2)
         gt_w_img2 = cal_single_warped(gt_flow.transpose(3,0,1,2), img2)
         #%%
-        from utils import cal_rev_flow
-        ragg_flow = cal_rev_flow(agg_flow)
-        # ragg_flow = reader.set_rev_flow()
+        %run -i '/home/hynx/regis/recursive-cascaded-networks/networks/layers.py'
+        def cal_rev_flow1(flow):
+            flow = torch.tensor(flow).permute(-1,0,1,2).cuda()[None]
+            size = flow.shape[2:]
+            rs = RevSpatialTransformer(size)
+            rs.cuda()
+            return rs(flow)[0].permute(1,2,3,0).cpu().numpy()
+        ragg_flow = cal_rev_flow1(agg_flow)
         areas = abs(single_jacobian_det(ragg_flow.transpose(3,0,1,2)))
+        # neg_flow = dct['rev_flow'][idx].permute(1,2,3,0).numpy()
+        # areas = abs(single_jacobian_det(neg_flow.transpose(3,0,1,2)))
         areas = torch.tensor(areas)
         areas = 1/areas
         # get nxn neighbors of each voxel and avg areas
@@ -136,7 +148,7 @@ if __name__ == '__main__':
         sum_p_masks = np.sum(p_masks, axis=0)
         import matplotlib
         def func_a(ax, i):
-            p = ax.imshow(sum_masks[i], cmap='RdPu', alpha=1, norm=matplotlib.colors.Normalize(vmin=0, vmax=4))
+            p = ax.imshow(sum_masks[i], cmap='RdPu', alpha=.7, norm=matplotlib.colors.Normalize(vmin=0, vmax=4))
             # p = ax.imshow(sum_p_masks[i], cmap='RdPu', alpha=.6, norm=matplotlib.colors.Normalize(vmin=0, vmax=3))
             # plt.colorbar(p, ax=ax, ticks=list(range(len(masks))))
 
@@ -144,7 +156,7 @@ if __name__ == '__main__':
             # ax.clabel(d, inline=True, fontsize=5)
             # plt.colorbar(d, ax=ax, ticks=values[-3:])
 
-            p = ax.imshow((areas.clip(0,2)[i]), cmap='gray', alpha=.7)
+            p = ax.imshow((nb_areas.clip(0,2)[i]), cmap='gray', alpha=.7)
             # plt.colorbar(p, ax=ax)
             # ax.imshow(reader.img2[i], cmap='gray', alpha=.5)
             # ax.imshow(normal_w_img2[i], cmap='gray', alpha=.9)
@@ -174,6 +186,7 @@ if __name__ == '__main__':
         err = [eP2P(agg_flow, gt_flow, m) for m in masks]
         print('{} to {} flow end to end error:'.format(id1, id2), err)
         errs.append(err)
+
         #%% save image
         if save_im:
             img_dir = pa('../images/{}/{}_{}'.format(mode, id1, id2))
