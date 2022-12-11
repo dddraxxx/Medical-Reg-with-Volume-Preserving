@@ -1,3 +1,4 @@
+#%%
 import torch
 import torch.nn as nn
 from torch.nn import ReLU, LeakyReLU
@@ -98,7 +99,7 @@ class Unet(nn.Module):
         prev_nf = 2
         self.downarm = nn.ModuleList()
         for nf in self.enc_nf:
-            self.downarm.append(convolveLeakyReLU(prev_nf, nf, dim=ndims, kernel_size=3, stride=2, leakyr_slope=0.2))
+            self.downarm.append(convolveLeakyReLU(prev_nf, nf, dim=ndims, kernel_size=3, stride=2, leakyr_slope=0.1))
             prev_nf = nf
 
         # configure decoder (up-sampling path)
@@ -106,14 +107,14 @@ class Unet(nn.Module):
         self.uparm = nn.ModuleList()
         for i, nf in enumerate(self.dec_nf[:len(self.enc_nf)]):
             channels = prev_nf + enc_history[i] if i > 0 else prev_nf
-            self.uparm.append(convolveLeakyReLU(channels, nf, dim=ndims, kernel_size=3, stride=1, leakyr_slope=0.2))
+            self.uparm.append(convolveLeakyReLU(channels, nf, dim=ndims, kernel_size=3, stride=1, leakyr_slope=0.1))
             prev_nf = nf
 
         # configure extra decoder convolutions (no up-sampling)
         prev_nf += 2
         self.extras = nn.ModuleList()
         for nf in self.dec_nf[len(self.enc_nf):]:
-            self.extras.append(convolveLeakyReLU(prev_nf, nf, dim=ndims, kernel_size=3, stride=1, leakyr_slope=0.2))
+            self.extras.append(convolveLeakyReLU(prev_nf, nf, dim=ndims, kernel_size=3, stride=1, leakyr_slope=0.1))
             prev_nf = nf
  
     def forward(self, x):
@@ -187,6 +188,8 @@ class VXM(nn.Module):
         # init flow layer with small weights and bias
         self.flow.weight = nn.Parameter(Normal(0, 1e-5).sample(self.flow.weight.shape))
         self.flow.bias = nn.Parameter(torch.zeros(self.flow.bias.shape))
+        self.flow.initialized = True
+        setattr(self.flow, 'initialized', True)
 
         # probabilities are not supported in pytorch
         if use_probs:
@@ -205,15 +208,15 @@ class VXM(nn.Module):
         self.integrate = layers.VecInt(down_shape, int_steps) if int_steps > 0 else None
 
         # configure transformer
-        # self.transformer = layers.SpatialTransformer(inshape)
         self.flow_multiplier = flow_multiplier
 
-    def forward(self, source, target, return_preint=False):
+    def forward(self, source, target, return_preint=False, return_neg=False):
         '''
         Parameters:
             source: Source image tensor.
             target: Target image tensor.
         '''
+        bidir = self.bidir or return_neg
 
         # concatenate inputs and propagate unet
         x = torch.cat([source, target], dim=1)
@@ -230,20 +233,20 @@ class VXM(nn.Module):
         preint_flow = pos_flow
 
         # negate flow for bidirectional model
-        neg_flow = -pos_flow if self.bidir else None
+        neg_flow = -pos_flow if bidir else None
 
         # integrate to produce diffeomorphic warp
         if self.integrate:
             pos_flow = self.integrate(pos_flow)
-            neg_flow = self.integrate(neg_flow) if self.bidir else None
+            neg_flow = self.integrate(neg_flow) if bidir else None
 
             # resize to final resolution
             if self.fullsize:
                 pos_flow = self.fullsize(pos_flow)
-                neg_flow = self.fullsize(neg_flow) if self.bidir else None
+                neg_flow = self.fullsize(neg_flow) if bidir else None
         
         returns = [pos_flow]
-        if self.bidir: returns.append(neg_flow)
+        if bidir: returns.append(neg_flow)
         if return_preint: returns.append(preint_flow)
         returns = [r*self.flow_multiplier for r in returns]
         return returns if len(returns)>1 else returns[0]
@@ -291,7 +294,7 @@ class VTN(nn.Module):
 
         self.pred0 = upconvolve(2 * channels + dim, dim, 4, 2, dim=dim)
 
-    def forward(self, fixed, moving):
+    def forward(self, fixed, moving, return_neg = False):
         concat_image = torch.cat((fixed, moving), dim=1)  # 2 x 512 x 512
         x1 = self.conv1(concat_image)  # 16 x 256 x 256
         x2 = self.conv2(x1)  # 32 x 128 x 128
@@ -335,8 +338,7 @@ class VTN(nn.Module):
 
 
 class VTNAffineStem(nn.Module):
-
-    def __init__(self, dim=1, channels=16, flow_multiplier=1., im_size=512):
+    def __init__(self, dim=1, channels=16, flow_multiplier=1., im_size=512, flow_correct=True):
         super(VTNAffineStem, self).__init__()
         self.flow_multiplier = flow_multiplier
         self.channels = channels
@@ -384,7 +386,35 @@ class VTNAffineStem(nn.Module):
             self.fc_loc[-1].bias.data.copy_(torch.tensor([1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0], dtype=torch.float))
         else:
             self.fc_loc[-1].bias.data.copy_(torch.tensor([1, 0, 0, 0, 1, 0], dtype=torch.float))
-
+        
+        self.create_flow = self.cr_flow if flow_correct else self.wr_flow
+        
+    def cr_flow(self, theta, size):
+        shape = size[2:]
+        flow = F.affine_grid(theta-torch.eye(len(shape), len(shape)+1, device=theta.device), size, align_corners=False)
+        if len(shape) == 2:
+            flow = flow[..., [1, 0]]
+            flow = flow.permute(0, 3, 1, 2)
+        elif len(shape) == 3:
+            flow = flow[..., [2, 1, 0]]
+            flow = flow.permute(0, 4, 1, 2, 3)
+        flow = flow*flow.new_tensor(shape).view(-1, *[1 for i in shape])/2
+        return flow
+    def wr_flow(self, theta, size):
+        flow = F.affine_grid(theta, size, align_corners=False)  # batch x 512 x 512 x 2
+        if self.dim == 2:
+            flow = flow.permute(0, 3, 1, 2)  # batch x 2 x 512 x 512
+        else:
+            flow = flow.permute(0, 4, 1, 2, 3)
+        return flow  
+    def rev_affine(self, theta, dim=2):
+        b = theta[:, :, dim:]
+        inv_w = torch.inverse(theta[:, :dim, :dim])
+        neg_affine = torch.cat([inv_w, -inv_w@b], dim=-1)
+        return neg_affine
+    def neg_flow(self, theta, size):
+        neg_affine = self.rev_affine(theta, dim=self.dim)
+        return self.create_flow(neg_affine, size)
 
     def forward(self, fixed, moving):
         concat_image = torch.cat((fixed, moving), dim=1)  # 2 x 512 x 512
@@ -405,22 +435,87 @@ class VTNAffineStem(nn.Module):
             theta = self.fc_loc(xs).view(-1, 3, 4)
         else:
             theta = self.fc_loc(xs).view(-1, 2, 3)
-        flow = F.affine_grid(theta, moving.size(), align_corners=False)  # batch x 512 x 512 x 2
-
-        if self.dim == 2:
-            flow = flow.permute(0, 3, 1, 2)  # batch x 2 x 512 x 512
-        else:
-             flow = flow.permute(0, 4, 1, 2, 3)
-
+        flow = self.create_flow(theta, moving.size())
+        # theta: the affine param
         return flow, {'theta': theta}
 
 
 if __name__ == "__main__":
-    vtn_model = VTN(dim=3)
-    vxm_model = VXM
-    vtn_affine_model = VTNAffineStem(dim=3, im_size=512)
-    x = torch.randn(1, 1, 512, 512, 512)
-    y1 = vtn_model(x, x)
-    y2 = vtn_affine_model(x, x)
+    vtn_model = VTN()
+    vtn_affine_model = VTNAffineStem(dim=3, im_size=16)
+    torch.manual_seed(0)
+    # theta = torch.rand(4, 3, 4)
+    theta = torch.tensor([
+    [2, 0.1, 0,0.2],
+    [0.5, 2, 0,0.5],
+    [0.2, 0, 2, 1],
+], dtype=torch.float)[None]
+    # theta = torch.randn(1,3,4)
+    flow = vtn_affine_model.create_flow(theta, (1, 1, 16,16,16))
+    neg_flow = vtn_affine_model.neg_flow(theta, (1, 1, 16,16,16))
+    print(flow.shape)
+    from layers import SpatialTransformer
+    st = SpatialTransformer(flow.shape[2:])
+    # agg_flow = neg_flow + st(flow, neg_flow)
+    agg_flow = flow + torch.einsum('bij, bjxyz -> bixyz', theta[:,:3,:3], neg_flow)
+    print(agg_flow.quantile(0.95),flow.quantile(0.95))
 
-    assert  y1.size() == y2.size()
+    # x = torch.randn(1, 1, 512, 512, 512)
+    # y1 = vtn_model(x, x)
+    # y2 = vtn_affine_model(x, x)
+    # assert  y1.size() == y2.size()
+
+    #%%
+    from torchvision import transforms
+    from PIL import Image
+    import matplotlib.pyplot as plt
+
+    # %matplotlib inline
+
+    img_path = "/home/hynx/regis/recursive-cascaded-networks/tools/disp.png"
+    img_torch = transforms.ToTensor()(Image.open(img_path))[:, :400,600:1000]
+
+    plt.imshow(img_torch.numpy().transpose(1,2,0))
+    plt.show()
+    # %%
+    from torch.nn import functional as F
+
+    theta = torch.tensor([
+        [2, 0, 0.2],
+        [0, 2, 0.5]
+    ], dtype=torch.float)
+    grid = F.affine_grid(theta.unsqueeze(0), img_torch.unsqueeze(0).size())
+    output = F.grid_sample(img_torch.unsqueeze(0), grid)
+    new_img_torch = output[0]
+    plt.imshow(new_img_torch.numpy().transpose(1,2,0))
+    plt.show()
+    #%%
+    idt = torch.eye(2,3)
+    def rev_affine(theta, dim=2):
+        b = theta[:,dim:]
+        inv_w = torch.inverse(theta[:dim, :dim])
+        neg_affine = torch.cat([inv_w, -inv_w@b], dim=-1)
+        return neg_affine
+
+    r_theta = rev_affine(theta)
+    print(r_theta)
+
+    st = SpatialTransformer(img_torch.shape[-2:])
+    vtn_affine_model = VTNAffineStem(dim=2, im_size=400)
+
+    flow = vtn_affine_model.create_flow(theta[None], (1,1,400,400))
+    rev_flow = vtn_affine_model.create_flow(r_theta[None], (1,2,400,400))
+    agg_flow = flow + torch.einsum('bij, bjxy -> bixy', theta[None][:,:2,:2], rev_flow)
+    # agg_flow = rev_flow+st(flow, rev_flow)
+    print(agg_flow.max(), flow.max())
+
+    # grid = F.affine_grid(theta.unsqueeze(0), img_torch.unsqueeze(0).size())
+    # new_img = F.grid_sample(img_torch[None], grid)
+    # plt.imshow(new_img[0].numpy().transpose(1,2,0))
+    # plt.show()
+
+    fl_img = st(img_torch[None], agg_flow)
+    # fl_img = st(img_torch[None], (flow))
+    # fl_img = st(fl_img, rev_flow)
+    plt.imshow(fl_img[0].numpy().transpose(1,2,0))
+    plt.show()

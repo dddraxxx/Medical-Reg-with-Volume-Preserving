@@ -82,7 +82,7 @@ class Data(Dataset):
                             for k in self.schemes[scheme].items() if k in affine_dct][0]
         
         # no fraction used
-        if 'lits_d'==scheme:
+        if 'lits_d'==scheme or 'lits_d' in self.schemes[scheme]:
             print('using lits_d')
             self.data_pairs = [(self.get_pairs_with_gt(self.subset[k]))
                         for k, fraction in self.schemes[scheme].items()]

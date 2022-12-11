@@ -30,6 +30,7 @@ parser.add_argument('--net_args', type=str, default=None)
 parser.add_argument('--name', type=str, default=None)
 parser.add_argument('-s','--save_pkl', action='store_true', help='Save the results as a pkl file')
 parser.add_argument('-base', '--base_network', type=str, default='VTN')
+parser.add_argument('-re','--reverse', action='store_true', help='If save reverse flow in pkl file')
 args = parser.parse_args()
 
 if args.gpu:
@@ -46,7 +47,7 @@ def main():
     val_dataset = Data(args.dataset, scheme=args.val_subset or Split.VALID)
     val_loader = DataLoader(val_dataset, batch_size=args.batch_size, num_workers=min(8, args.batch_size), shuffle=False)
     # build framework
-    model = RecursiveCascadeNetwork(n_cascades=args.n_cascades, im_size=image_size, base_network=args.base_network).cuda()
+    model = RecursiveCascadeNetwork(n_cascades=args.n_cascades, im_size=image_size, base_network=args.base_network, cr_aff=True).cuda()
     # add checkpoint loading
     print("Loading checkpoint from {}".format(args.checkpoint))
     from tools.utils import load_model, load_model_from_dir
@@ -57,7 +58,10 @@ def main():
         load_model(torch.load(model_path), model)
     
     # parent of model path
-    output_fname = './evaluations/{}_{}_{}.txt'.format(os.path.dirname(model_path).split('/')[-1], args.val_subset or Split.VALID, args.name or '')
+    import re
+    # "([^\/]*_\d{6}_[^\/]*)"gm
+    exp_name = re.search(r"([^\/]*_\d{6}_[^\/]*)", model_path).group(1)
+    output_fname = './evaluations/{}_{}_{}.txt'.format(exp_name, args.val_subset or Split.VALID, args.name or '')
     print('Saving to {}'.format(output_fname))
     # create dir
     os.makedirs(os.path.dirname(output_fname), exist_ok=True)
@@ -69,15 +73,21 @@ def main():
     if args.save_pkl:
         results['agg_flows'] = []
         results['affine_params'] = []
+        if args.reverse:
+            results['rev_flow'] = []
     for iteration, data in tqdm(enumerate(val_loader)):
         fixed, moving = data['voxel1'], data['voxel2']
         id1, id2 = data['id1'], data['id2']
         fixed = fixed.cuda()
         moving = moving.cuda()
-        warped, flows, agg_flows, affine_params = model(fixed, moving, return_affine=True)
+        warped, flows, agg_flows, affine_params = model(fixed, moving, return_affine=True, return_neg=args.reverse)
         
         if args.save_pkl:
             magg_flows = torch.stack(agg_flows).transpose(0,1).detach().cpu()
+            if args.reverse:
+                re_flow = magg_flows[:, -1]
+                magg_flows = magg_flows[:, :-1]
+                results['rev_flow'].extend(re_flow)
             results['agg_flows'].extend(magg_flows)
             results['affine_params'].extend(affine_params['theta'].detach().cpu())
         # metrics: dice
