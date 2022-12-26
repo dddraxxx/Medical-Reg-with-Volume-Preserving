@@ -98,3 +98,22 @@ def generate_plots(fixed, moving, warped, flows, train_loss, val_loss, reg_loss,
 
     plt.suptitle(f"Epoch {epoch}")
     plt.savefig(f'./ckp/visualization/epoch_{epoch}.png')
+
+if __name__=='__main__':
+    #%%
+    import monai
+    file = '/mnt/sdc/lits/train/volume-102.nii'
+    fdir = '/mnt/sdc/lits/train'
+    # glob nii
+    import glob
+    nii_files = sorted(glob.glob(f'{fdir}/volum*.nii'), key=lambda x: int(x.split('-')[-1].split('.')[0]))
+    print(nii_files)
+    #%%
+    from monai.transforms import (
+        Compose, LoadImage
+    )
+    print(nii_files[128])
+    LoadImage()(nii_files[128])
+    #%%
+    img, meta = LoadImage()(nii_files[75])
+    meta['space']

@@ -72,13 +72,6 @@ def single_grid_volumes(flow):
 if __name__ == '__main__':
     import matplotlib.pyplot as plt
     #%%
-    fname = '/home/hynx/regis/recursive-cascaded-networks/evaluations/Dec06_012136_normal-vtn_lits_d_.pkl'
-    fname = '/home/hynx/regis/recursive-cascaded-networks/evaluations/Dec06_012136_normal-vtn_mini-val_.pkl'
-    mode = 'normal'
-    # fname = '/home/hynx/regis/recursive-cascaded-networks/evaluations/Oct03_210121_masked_lits_d_.pkl'
-    # mode = 'mask'
-    # fname = '/home/hynx/regis/recursive-cascaded-networks/evaluations/Dec06_043431_msk-ks-vtn_lits_d_.pkl'
-    # mode = 'mask_ks'
     # below: bad performance
     # fname = '/home/hynx/regis/recursive-cascaded-networks/evaluations/Oct11_183942_soft-m_lits_d_.pkl'
     # mode = 'soft_mask'
@@ -88,6 +81,16 @@ if __name__ == '__main__':
     # mode = 'vxm'
     # fname = '/home/hynx/regis/recursive-cascaded-networks/evaluations/Dec06_050505_hard-ks-vtn_lits_d_.pkl'
     # mode = 'hard-ks'
+    ### below: good performance
+    fname = '/home/hynx/regis/recursive-cascaded-networks/evaluations/Dec06_012136_normal-vtn_lits_d_.pkl'
+    fname = '/home/hynx/regis/recursive-cascaded-networks/evaluations/Dec06_012136_normal-vtn_mini-val_.pkl'
+    mode = 'normal'
+    # fname = '/home/hynx/regis/recursive-cascaded-networks/evaluations/Oct03_210121_masked_lits_d_.pkl'
+    # mode = 'mask'
+    fname = '/home/hynx/regis/recursive-cascaded-networks/evaluations/Dec06_043431_msk-ks-vtn_lits_d_.pkl'
+    fname = '/home/hynx/regis/recursive-cascaded-networks/evaluations/Dec12_002235_msk-ks.7-vtn_lits-d_.pkl'
+    fname = '/home/hynx/regis/recursive-cascaded-networks/evaluations/Dec12_153742_msk-ks1-vtn_lits-d_.pkl'
+    mode = 'mask_ks'
 
     dct = pkl.load(open(fname, 'rb'))
     print(dct.keys())
