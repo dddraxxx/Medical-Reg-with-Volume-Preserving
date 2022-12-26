@@ -338,7 +338,7 @@ class VTN(nn.Module):
 
 
 class VTNAffineStem(nn.Module):
-    def __init__(self, dim=1, channels=16, flow_multiplier=1., im_size=512, flow_correct=True):
+    def __init__(self, dim=1, channels=16, flow_multiplier=1., im_size=512, in_channels=2, flow_correct=True):
         super(VTNAffineStem, self).__init__()
         self.flow_multiplier = flow_multiplier
         self.channels = channels
@@ -346,7 +346,7 @@ class VTNAffineStem(nn.Module):
 
         # Network architecture
         # The first convolution's input is the concatenated image
-        self.conv1 = convolveLeakyReLU(2, channels, 3, 2, dim=self.dim)
+        self.conv1 = convolveLeakyReLU(in_channels, channels, 3, 2, dim=self.dim)
         self.conv2 = convolveLeakyReLU(channels, 2 * channels, 3, 2, dim=dim)
         self.conv3 = convolveLeakyReLU(2 * channels, 4 * channels, 3, 2, dim=dim)
         self.conv3_1 = convolveLeakyReLU(4 * channels, 4 * channels, 3, 1, dim=dim)

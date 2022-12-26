@@ -3,18 +3,18 @@ from .base_networks import *
 from .layers import SpatialTransformer
 
 class RecursiveCascadeNetwork(nn.Module):
-    def __init__(self, n_cascades, im_size=(512, 512), base_network='VTN', cr_aff=False):
+    def __init__(self, n_cascades, im_size=(512, 512), base_network='VTN', in_channels=2, cr_aff=False):
         super(RecursiveCascadeNetwork, self).__init__()
 
         device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         self.stems = nn.ModuleList()
         # See note in base_networks.py about the assumption in the image shape
         print('using AffineStem with correct: {}'.format(cr_aff))
-        self.stems.append(VTNAffineStem(dim=len(im_size), im_size=im_size[0], flow_correct=cr_aff))
+        self.stems.append(VTNAffineStem(dim=len(im_size), im_size=im_size[0], flow_correct=cr_aff, in_channels=in_channels))
         assert base_network in BASE_NETWORK
         base = eval(base_network)
         for i in range(n_cascades):
-            self.stems.append(base(im_size=im_size, flow_multiplier=1.0 / n_cascades))
+            self.stems.append(base(im_size=im_size, flow_multiplier=1.0 / n_cascades, in_channels=in_channels))
 
         # Parallelize across all available GPUs
         # if torch.cuda.device_count() > 1:

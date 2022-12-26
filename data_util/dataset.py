@@ -66,6 +66,7 @@ class Data(Dataset):
                 return int(key)
             except ValueError as e:
                 return key
+        scheme = convert_int(scheme)
         self.schemes = dict([(convert_int(k), v)
                              for k, v in config['schemes'].items()])
 
