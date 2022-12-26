@@ -5,3 +5,4 @@ evaluations/*
 *_trial.py
 *.png
 *.jpg
+.ipynb_checkpoints
