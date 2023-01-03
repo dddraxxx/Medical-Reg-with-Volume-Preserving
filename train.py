@@ -10,7 +10,7 @@ from networks.recursive_cascade_networks import RecursiveCascadeNetwork
 from torch.optim import Adam
 from torch.optim.lr_scheduler import StepLR
 from torch.utils.data import DataLoader
-from metrics.losses import det_loss, jacobian_det, masked_sim_loss, ortho_loss, reg_loss, score_metrics, sim_loss
+from metrics.losses import det_loss, jacobian_det, masked_sim_loss, ortho_loss, reg_loss, score_metrics, sim_loss, surf_loss
 import datetime as datetime
 from torch.utils.tensorboard import SummaryWriter
 # from data_util.ctscan import sample_generator
@@ -19,7 +19,7 @@ from torch import distributed as dist
 from torch.nn.parallel import DistributedDataParallel as DDP
 
 parser = argparse.ArgumentParser()
-parser.add_argument('-b', "--batch_size", type=int, default=4)
+parser.add_argument('-bs', "--batch_size", type=int, default=4)
 parser.add_argument('-base', '--base_network', type=str, default='VTN')
 parser.add_argument('-n', "--n_cascades", type=int, default=3)
 parser.add_argument('-e', "--epochs", type=int, default=5)
@@ -28,6 +28,7 @@ parser.add_argument("-v", "--val_steps", type=int, default=1000)
 parser.add_argument('-cf', "--checkpoint_frequency", default=0.5, type=float)
 parser.add_argument('-c', "--checkpoint", type=str, default=None)
 parser.add_argument('-ct', '--continue_training', action='store_true')
+parser.add_argument('--ctt', '--continue_training_this', type=str, default=None)
 parser.add_argument('--fixed_sample', type=int, default=100)
 parser.add_argument('-g', '--gpu', type=str, default='', help='GPU to use')
 parser.add_argument('-d', '--dataset', type=str, default='datasets/liver_cust.json', help='Specifies a data config')
@@ -36,11 +37,16 @@ parser.add_argument('--debug', action='store_true', help="run the script without
 parser.add_argument('--name', type=str, default='')
 parser.add_argument('--ortho', type=float, default=0.1, help="use ortho loss")
 parser.add_argument('--det', type=float, default=0.1, help="use det loss")
+parser.add_argument('--reg', type=float, default=1, help="use reg loss")
 parser.add_argument('--keep_size', type=float, default=0, help="use keep-size loss")
 parser.add_argument('--size_type', choices=['smooth', 'organ', 'constant'], default='organ')
 parser.add_argument('-m', '--masked', choices=['soft', 'seg', 'hard'], default='',
      help="mask the tumor part when calculating similarity loss")
 parser.add_argument('-mn', '--masked_neighbor', type=int, default=10, help="for masked neibor calculation")
+parser.add_argument('--stage1_rev', type=bool, default=False, help="whether to use reverse flow in stage 1")
+parser.add_argument('-inv', '--invert_loss', action='store_true', help="invertibility loss")
+parser.add_argument('--surf_loss', default=0, type=float, help='Surface loss weight')
+
 args = parser.parse_args()
 if args.gpu:
     os.environ["CUDA_VISIBLE_DEVICES"] = args.gpu
@@ -73,14 +79,20 @@ def main():
 
     # mkdirs for log
     if not args.debug:
-        print("Creating log dir")
-        log_dir = os.path.join('./logs', run_id)
-        os.path.exists(log_dir) or os.makedirs(log_dir)
-        writer = SummaryWriter(log_dir=log_dir)
-        if not os.path.exists(log_dir+'/model_wts/'):
-            print("Creating ckp dir")
-            os.makedirs(log_dir+'/model_wts/')
+        if not args.ctt:
+            print("Creating log dir")
+            log_dir = os.path.join('./logs', run_id)
+            os.path.exists(log_dir) or os.makedirs(log_dir)
+            writer = SummaryWriter(log_dir=log_dir)
+            if not os.path.exists(log_dir+'/model_wts/'):
+                print("Creating ckp dir")
+                os.makedirs(log_dir+'/model_wts/')
+                ckp_dir = log_dir+'/model_wts/'
+        if args.ctt:
+            print("Using log dir")
+            log_dir = args.ctt
             ckp_dir = log_dir+'/model_wts/'
+            writer = SummaryWriter(log_dir=log_dir)
 
     # read config
     with open(args.dataset, 'r') as f:
@@ -89,21 +101,26 @@ def main():
         image_type = cfg.get('image_type', None)
         segmentation_class_value=cfg.get('segmentation_class_value', {'unknown':1})
 
-    model = RecursiveCascadeNetwork(n_cascades=args.n_cascades, im_size=image_size, base_network=args.base_network).cuda()
+    in_channels = 2 if not args.masked else 3
+    model = RecursiveCascadeNetwork(n_cascades=args.n_cascades, im_size=image_size, base_network=args.base_network, cr_aff=True, in_channels=in_channels).cuda()
     if args.masked == 'soft' or args.masked == 'hard':
-        state_path = '/home/hynx/regis/recursive-cascaded-networks/ckp/model_wts/Sep27_145203_normal'
-        stage1_model = RecursiveCascadeNetwork(n_cascades=args.n_cascades, im_size=image_size, base_network='VTN').cuda()
+        print('Building stage 1 model')
+        state_path = '/home/hynx/regis/recursive-cascaded-networks/logs/Dec06_012136_normal-vtn/model_wts'
+        stage1_model = RecursiveCascadeNetwork(n_cascades=args.n_cascades, im_size=image_size, base_network='VTN', cr_aff=True).cuda().eval()
+        # state_path = '/home/hynx/regis/recursive-cascaded-networks/logs/Nov26_030214_normal-vxm/model_wts'
+        # stage1_model = RecursiveCascadeNetwork(n_cascades=args.n_cascades, im_size=image_size, base_network='VXM', cr_aff=False).cuda().eval()
         load_model_from_dir(state_path, stage1_model)
     # add checkpoint loading
     start_epoch = 0
-    if args.checkpoint:
-        print("Loading checkpoint from {}".format(args.checkpoint))
-        if os.path.isdir(args.checkpoint):
-            load_model_from_dir(args.checkpoint, model)
-        else: load_model(args.checkpoint, model)
-        if args.continue_training:
+    if args.checkpoint or args.ctt:
+        ckp = args.checkpoint or ckp_dir
+        if os.path.isdir(ckp):
+            ckp = load_model_from_dir(ckp, model)
+        else: load_model(torch.load(os.path.join(ckp)), model)
+        print("Loaded checkpoint from {}".format(ckp))
+        if args.continue_training or args.ctt:
             print("Continue training from checkpoint")
-            start_epoch = torch.load(args.checkpoint)['epoch']        
+            start_epoch = torch.load(ckp)['epoch'] + 1
         
     if dist.is_initialized():
         model = DDP(model, device_ids=[local_rank], output_device=local_rank)
@@ -137,6 +154,9 @@ def main():
     reg_loss_log = []
     val_loss_log = []
     max_seg = max(segmentation_class_value.values())
+
+    # use cudnn.benchmark
+    torch.backends.cudnn.benchmark = True
     for epoch in range(start_epoch, args.epochs):
         print(f"-----Epoch {epoch+1} / {args.epochs}-----")
         train_epoch_loss = 0
@@ -156,74 +176,113 @@ def main():
             # do some augmentation
             seg1 = data['segmentation1'].cuda()
             moving, seg2 = model.augment(moving, data['segmentation2'].cuda())
-            warped, flows, agg_flows, affine_params = model(fixed, moving, return_affine=True)
+            if args.invert_loss:
+                fixed, moving = torch.cat([fixed, moving], dim=0), torch.cat([moving, fixed], dim=0)
+                seg1, seg2 = torch.cat([seg1, seg2], dim=0), torch.cat([seg2, seg1], dim=0)
+            if args.masked:
+                moving_ = torch.cat([moving, seg2.float()], dim=1)
+            else:
+                moving_ = moving
+            warped_, flows, agg_flows, affine_params = model(fixed, moving_, return_affine=True)
+            warped = [i[:, :-1] for i in warped_] if args.masked else warped_
 
             # affine loss
             ortho_factor, det_factor = args.ortho, args.det
             A = affine_params['theta'][..., :3, :3]
             ort = ortho_factor * ortho_loss(A)
             det = det_factor * det_loss(A)
+
+            with torch.no_grad():
+                w_seg = mmodel.reconstruction(torch.cat([seg2.float(), (seg2>1.5).float()], dim=0), agg_flows[-1].repeat(2,1,1,1,1))
+                w_seg2, warped_tseg = w_seg[:len(w_seg)//2], w_seg[len(w_seg)//2:]>0.5
+            # add log scalar tumor/ratio
+            if (seg2>1.5).sum().item() > 0:
+                log_scalars['tumor_change'] = (warped_tseg).sum().item() / (seg2 > 1.5).sum().item()
+
             # sim and reg loss
             if not args.masked:
                 sim = sim_loss(fixed, warped[-1])
             else:
-                # caluculate mask
-                t_seg2 = seg2==2
-                # need torch no grad: Yes
-                with torch.no_grad():
-                    warped_tseg = mmodel.reconstruction(t_seg2.float(), agg_flows[-1])
-                mask = (warped_tseg > 0.5) | (seg1==2)
+                mask = warped_tseg | (seg1==2)
                 assert mask.requires_grad == False
                 if args.masked == 'seg': #or (args.masked=='hard' and epoch<=args.epochs*0.5):
                     sim = masked_sim_loss(fixed, warped[-1], mask)
                 elif args.masked == 'soft' or args.masked =='hard':
                     # get soft mask
                     with torch.no_grad():
-                        _, _, s1_agg_flows = stage1_model(fixed, moving)
+                        w_s1, _, s1_agg_flows = stage1_model(fixed, moving, return_neg=args.stage1_rev)
                     # todo: s1_agg_flows should be reversed
-                    flow_det = jacobian_det(s1_agg_flows[-1].detach(), return_det=True)
+                    # s1_flow = s1_agg_flows[-1].detach()
+                    # use normal flow to calculate flows
+                    s1_flow = s1_agg_flows[-1].detach()
+                    flow_det = jacobian_det(s1_flow, return_det=True)
                     flow_det = flow_det.unsqueeze(1).abs()
                     # get n x n neighbors 
                     n = args.masked_neighbor
-                    flow_det = F.avg_pool3d(flow_det, kernel_size=n*2-1, stride=1, divisor_override=1)
-                    # resize
-                    sizes = F.interpolate(flow_det, size=fixed.shape[-3:], mode='trilinear', align_corners=False)
+                    # w_n = torch.where(flow_det>1, flow_det, 1/flow_det)
+                    if args.stage1_rev: w_n = 1/flow_det
+                    else: w_n = flow_det
+                    sizes = F.avg_pool3d(w_n, kernel_size=n, stride=1, padding=n//2)
+                    sizes = F.interpolate(sizes, size=fixed.shape[-3:], mode='trilinear', align_corners=False) \
+                        if sizes.shape[-3:]!=fixed.shape[-3:] else sizes
+                    w_n = sizes
+                    # sizes = sizes/sizes.mean(dim=(2,3,4), keepdim=True)
                     log_scalars['size_quantile_0.9'] = torch.quantile(sizes, .9)
                     log_scalars['size_quantile_0.1'] = torch.quantile(sizes, .1)
                     if args.masked=='soft':
                         # normalize soft mask
-                        w = torch.where(sizes>1, 1/sizes, sizes)
-                        soft_mask = w/w.mean(dim=(2,3,4), keepdim=True)
+                        soft_mask = w_n/w_n.mean(dim=(2,3,4), keepdim=True)
                         # soft mask * sim loss per pixel
                         sim = masked_sim_loss(fixed, warped[-1], mask, soft_mask)
                         # sim = masked_sim_loss(fixed, warped[-1], soft_mask.new_zeros(soft_mask.shape, dtype=bool), soft_mask)
                     elif args.masked=='hard':# and epoch>args.epochs*0.5:
-                        w_n = torch.where(sizes>1, sizes, 1/sizes)
                         # margin value should be set as argument
-                        w_n[...,:n] = w_n[...,-n:] = w_n[...,:n,:] = w_n[...,-n:,:] = w_n[...,:n,:,:] = w_n[...,-n:,:,:] = 0
+                        # w_n[...,:n] = w_n[...,-n:] = w_n[...,:n,:] = w_n[...,-n:,:] = w_n[...,:n,:,:] = w_n[...,-n:,:,:] = 0
                         thres = 2 # thres = torch.quantile(w_n, .9)
-                        hard_mask = w_n < thres
-                        with torch.no_grad():
-                            warped_hard_mask = mmodel.reconstruction(hard_mask.float(), agg_flows[-1])
-                        merged_mask = (warped_hard_mask > 0.5) | (hard_mask) | mask
+                        hard_mask = w_n > thres
+                        if args.stage1_rev:
+                            with torch.no_grad():
+                                warped_hard_mask = mmodel.reconstruction(hard_mask.float(), agg_flows[-1]) > 0.5
+                        else: warped_hard_mask = hard_mask
+                        merged_mask = (warped_hard_mask)
                         assert merged_mask.requires_grad == False
                         sim = masked_sim_loss(fixed, warped[-1], merged_mask)
+                        warped_tseg = warped_hard_mask
 
-            reg = reg_loss(flows[1:])
+            reg = reg_loss(flows[1:]) * args.reg
             if args.keep_size!=0:
                 # nonaffine_flow = flows[1]
                 # for flow in flows[2:]:
                 #     nonaffine_flow = mmodel.reconstruction(nonaffine_flow, flow) + flow
+                bs = agg_flows[-1].shape[0]
                 if args.size_type=='constant': ratio = 1
-                elif args.size_type=='organ': ratio = (seg1==1).sum()/(seg2==1).sum()
-                kmask = warped_tseg > .5
-                det_flow = jacobian_det(agg_flows[-1], return_det=True).abs().clamp(min=1/3, max=3)
+                elif args.size_type=='organ': ratio = (seg1>.5).view(bs,-1).sum(1)/(seg2>.5).view(bs, -1).sum(1); ratio=ratio.view(-1,1,1,1)
+                kmask = warped_tseg
+                det_flow = (jacobian_det(agg_flows[-1], return_det=True).abs()/ratio).clamp(min=1/3, max=3)
                 kmask = F.interpolate(kmask.float(), size=det_flow.shape[-3:], mode='trilinear', align_corners=False) > 0.5
                 det_flow = det_flow[kmask[:,0]]
-                size_change = torch.where(det_flow>ratio, det_flow/ratio, ratio/det_flow).mean() * args.keep_size
+                k_sz = torch.where(det_flow>1, det_flow, 1/det_flow).mean() * args.keep_size
+                if torch.isnan(k_sz): k_sz = sim.new_zeros(1)
             else:
-                size_change = torch.zeros(1).cuda()
-            loss = sim+reg+det+ort+size_change
+                k_sz = sim.new_zeros(1)
+            
+            if args.invert_loss:
+                foward_flow, backward_flow = agg_flows[-1][:args.batch_size], agg_flows[-1][args.batch_size:]
+                f12, f21 = mmodel.reconstruction(backward_flow, foward_flow)+foward_flow, mmodel.reconstruction(foward_flow, backward_flow)+backward_flow
+                f12_d, f21_d = (f12**2).sum(1), (f21**2).sum(1)
+                thres12, thres21 = torch.quantile(f12_d, .8), torch.quantile(f21_d, .8)
+                f12_d, f21_d = f12_d.clamp(max=thres12), f21_d.clamp(max=thres21)
+                ivt = (f12_d.mean()+f21_d.mean())/2
+                ivt = ivt*0.1
+            else: ivt = sim.new_zeros(1)
+
+            if args.surf_loss:
+                surf = surf_loss(w_seg2>0.5, seg1>0.5, agg_flows[-1]) * args.surf_loss
+            else: surf = sim.new_zeros(1)
+
+            loss = sim+reg+det+ort+k_sz+ivt+surf
+            if loss.isnan().any():
+                loss = 0
             loss.backward()
             optim.step()
             # ddp reduce of loss
@@ -234,7 +293,9 @@ def main():
                 'reg_loss': reg.item(),
                 'ortho_loss': ort.item(),
                 'det_loss': det.item(),
-                'keep_size_loss': size_change.item(),
+                'keep_size_loss': k_sz.item(),
+                'invert_loss': ivt.item(),
+                'surf_loss': surf.item(),
                 'loss': loss.item()
             }
 
@@ -246,7 +307,7 @@ def main():
             #     vis_batch.append(moving)
             #     vis_batch.append(warped)
             #     vis_batch.append(flows)
-            if local_rank==0 and (iteration%10==0 or args.debug):
+            if local_rank==0 and (iteration%10==0):
                 if iteration<500 or iteration % 500 == 0:
                     print('*%s* ' % run_id,
                           time.strftime('%Y-%m-%d %H:%M:%S', time.localtime()),
@@ -265,13 +326,11 @@ def main():
                         writer.add_image('train/seg2', seg2[0, :, 64]/max_seg, epoch * len(train_loader) + iteration)
 
                         writer.add_image('train/affine_warpd', warped[0][0, :, 64], epoch * len(train_loader) + iteration)
-                        with torch.no_grad():
-                            w_seg2 = mmodel.reconstruction(seg2, agg_flows[-1])
                         writer.add_image('train/w_seg2', w_seg2[0, :, 64]/max_seg, epoch * len(train_loader) + iteration)
                         # add sizes and hard mask
                         if 'sizes' in locals() and 'hard_mask' in locals():
-                            writer.add_image('train/grid_sizes', sizes[0, 0, :, 64], epoch * len(train_loader) + iteration)
-                            writer.add_image('train/hard_mask', hard_mask[0, 0, :, 64], epoch * len(train_loader) + iteration)
+                            writer.add_image('train/grid_sizes', sizes[0, :, 64], epoch * len(train_loader) + iteration)
+                            writer.add_image('train/hard_mask', hard_mask[0, :, 64], epoch * len(train_loader) + iteration)
 
                 if not args.debug:
                     for k in loss_dict:
@@ -292,9 +351,15 @@ def main():
                             print(f"\t-----Iteration {itern} / {len(val_loader)} -----")
                         with torch.no_grad():
                             fixed, moving = data['voxel1'], data['voxel2']
+                            seg2 = data['segmentation2'].cuda()
                             fixed = fixed.cuda()
                             moving = moving.cuda()
-                            warped, flows, agg_flows = mmodel(fixed, moving)
+                            if args.masked:
+                                moving_ = torch.cat([moving, seg2], dim=1)
+                            else:
+                                moving_ = moving
+                            warped_, flows, agg_flows = mmodel(fixed, moving_)
+                            warped = [i[:, :1] for i in warped_]
                             sim, reg = sim_loss(fixed, warped[-1]), reg_loss(flows[1:])
                             loss = sim + reg
                             val_epoch_loss += loss.item()

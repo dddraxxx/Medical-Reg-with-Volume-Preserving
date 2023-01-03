@@ -1,5 +1,5 @@
 import torch
-
+import torch.nn.functional as F
 
 def pearson_correlation(fixed, warped, soft_mask = None):
     flatten_fixed = torch.flatten(fixed, start_dim=1)
@@ -138,6 +138,49 @@ def reg_loss(flows):
         reg_loss = sum([regularize_loss_3d(flow) for flow in flows])
     return reg_loss
 
+def find_surf(seg, n=3):
+    '''seg: (**,D,H,W)
+    '''
+    pads = tuple((n-1)//2 for _ in range(6))
+    seg = F.pad(seg, pads, mode='constant', value=0).unfold(2, n, 1).unfold(3, n, 1).unfold(4, n, 1)
+    return seg.sum(dim=(-1,-2,-3)) < n**3
+
+def ret_surf_points(surf_p, max_num = None):
+    '''surf_p: (b, c, d, h, w), binary map of whether suface
+    return: (b, 3, max_num)
+    '''
+    sum_num = surf_p.sum((2,3,4))
+    if max_num is None:
+        max_num = int(min(sum_num.min(), 1e3))
+    surf_pm = surf_p.new_zeros(( surf_p.size(0), surf_p.size(1), (max_num)))
+    for i in range(surf_p.size(0)):
+        for j in range(surf_p.size(1)):
+            surf_pm[i,j] = surf_p[i, j].view(-1).nonzero()[:,0][torch.linspace(0, sum_num[i, j]-1, max_num).long()]
+    return surf_pm.long().expand(-1, 3, -1)
+
+def surf_loss(w_seg, seg1, flow):
+    '''w_seg, seg1: binary map for organs
+    flow: the flow field from 
+    use gumble max?
+    '''
+    w_surf = find_surf(w_seg)
+    seg1_surf = find_surf(seg1)
+    b, c, d, h, w = w_surf.size()
+    grid = torch.stack(torch.meshgrid(torch.arange(d), torch.arange(h), torch.arange(w),indexing='ij'), dim=0).to(w_surf.device)
+    w_surf = ret_surf_points(w_surf)
+    ws_points = grid.view(1,3,-1).expand(b,-1,-1).gather(2, w_surf) # b,3,n
+    seg1_surf = ret_surf_points(seg1_surf)
+    seg1_points = grid.view(1,3,-1).expand(b,-1,-1).gather(2, seg1_surf) # b,3,m
+    # cal min distance between ws_points and seg1_points
+    vect = ws_points[:, :, :, None] - seg1_points[:, :, None] # b,3,n,m
+    dist = (vect**2).sum(dim=1, keepdim=True) # b,1,n,m
+    a_min = dist.argmin(dim=-1, keepdim=True).expand(-1,3,-1,-1) # b,3,n,1
+    ws_flow = flow.view(b,3,-1).gather(2, w_surf) # b,3,n
+    surf_loss = vect.gather(-1, a_min)[...,0] - ws_flow
+    # print(surf_loss.shape)
+    # print(surf_loss.norm(dim=1).mean())
+    return surf_loss.norm(dim=1).mean()
+
 # if main
 if __name__ == '__main__':
     import numpy as np
@@ -145,4 +188,3 @@ if __name__ == '__main__':
     arr = np.random.rand(2, 3, 3)
     print(arr)
     print(ortho_loss(torch.tensor(arr).float()))
-
