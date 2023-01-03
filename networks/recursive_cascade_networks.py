@@ -44,6 +44,23 @@ class RecursiveCascadeNetwork(nn.Module):
                 torch.nn.init.xavier_uniform_(module.weight)
                 if module.bias is not None:
                     torch.nn.init.zeros_(module.bias)
+        
+        def load_state_dict(self, state_dict, strict=True):
+            """Copies parameters and buffers from :attr:`state_dict`
+            into this module and its descendants. If :attr:`strict` is ``True``,
+            then the keys of :attr:`state_dict` must exactly match the keys returned"""
+            own_state = self.state_dict()
+            for name, param in state_dict.items():
+                if name not in own_state:
+                    continue
+                if '.conv1.1.weight' in name and param.size(1)==2: # in case we want to use model with in-channel 2 whiel the current in-channel is 3
+                    own_state[name][:,:2].copy_(param)
+                    continue
+                if isinstance(param, nn.Parameter):
+                    # backwards compatibility for serialized parameters
+                    param = param.data
+                own_state[name].copy_(param)
+        self.stems.load_state_dict = load_state_dict.__get__(self.stems, nn.ModuleList)
 
     def forward(self, fixed, moving, return_affine=False, return_neg=False):
         flows = []

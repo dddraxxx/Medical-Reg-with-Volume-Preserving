@@ -61,7 +61,7 @@ class Unet(nn.Module):
         decoder: [32, 32, 32, 32, 32, 16, 16]
     """
 
-    def __init__(self, inshape, nb_features=None, nb_levels=None, feat_mult=1):
+    def __init__(self, inshape, nb_features=None, nb_levels=None, feat_mult=1, in_channels=2):
         super().__init__()
         """
         Parameters:
@@ -96,7 +96,7 @@ class Unet(nn.Module):
         self.upsample = nn.Upsample(scale_factor=2, mode='nearest')
 
         # configure encoder (down-sampling path)
-        prev_nf = 2
+        prev_nf = in_channels
         self.downarm = nn.ModuleList()
         for nf in self.enc_nf:
             self.downarm.append(convolveLeakyReLU(prev_nf, nf, dim=ndims, kernel_size=3, stride=2, leakyr_slope=0.1))
@@ -151,6 +151,7 @@ class VXM(nn.Module):
         unet_feat_mult=1,
         int_steps=7,
         int_downsize=2,
+        in_channels=2,
         bidir=False,
         use_probs=False):
         """ 
@@ -178,7 +179,8 @@ class VXM(nn.Module):
             im_size,
             nb_features=nb_unet_features,
             nb_levels=nb_unet_levels,
-            feat_mult=unet_feat_mult
+            feat_mult=unet_feat_mult,
+            in_channels=in_channels,
         )
 
         # configure unet to flow field layer
