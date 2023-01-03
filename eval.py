@@ -5,7 +5,7 @@ import pickle
 import json
 import re
 import numpy as np
-from metrics.losses import score_metrics
+from metrics.losses import score_metrics, find_surf
 from tqdm import tqdm
 from torch.utils.data import Dataset, DataLoader
 import torch
@@ -31,7 +31,15 @@ parser.add_argument('--name', type=str, default=None)
 parser.add_argument('-s','--save_pkl', action='store_true', help='Save the results as a pkl file')
 parser.add_argument('-base', '--base_network', type=str, default='VTN')
 parser.add_argument('-re','--reverse', action='store_true', help='If save reverse flow in pkl file')
+parser.add_argument('-tl','--test_large', action='store_true', help='If test on data with small tumor')
+parser.add_argument('-tb','--test_boundary', action='store_true', help='If test on data with tumor close to organ boundary')
+parser.add_argument('-lm', '--lmd', action='store_true', help='If test landmark locations')
+parser.add_argument('--lmk_json', type=str, default='/home/hynx/regis/recursive-cascaded-networks/datasets/lits17_landmark.json', help='landmark for eval files')
+parser.add_argument('-m', '--masked', action='store_true', help='If model need masks')
 args = parser.parse_args()
+if args.checkpoint == 'normal':
+    args.checkpoint = '/home/hynx/regis/recursive-cascaded-networks/logs/Dec27_133859_normal/model_wts'
+    # args.checkpoint = '/home/hynx/regis/recursive-cascaded-networks/logs/Dec06_012136_normal-vtn/model_wts'
 
 if args.gpu:
     os.environ["CUDA_VISIBLE_DEVICES"] = args.gpu
@@ -47,7 +55,7 @@ def main():
     val_dataset = Data(args.dataset, scheme=args.val_subset or Split.VALID)
     val_loader = DataLoader(val_dataset, batch_size=args.batch_size, num_workers=min(8, args.batch_size), shuffle=False)
     # build framework
-    model = RecursiveCascadeNetwork(n_cascades=args.n_cascades, im_size=image_size, base_network=args.base_network, cr_aff=True).cuda()
+    model = RecursiveCascadeNetwork(n_cascades=args.n_cascades, im_size=image_size, base_network=args.base_network, cr_aff=True, in_channels=2+args.masked).cuda()
     # add checkpoint loading
     print("Loading checkpoint from {}".format(args.checkpoint))
     from tools.utils import load_model, load_model_from_dir
@@ -75,12 +83,42 @@ def main():
         results['affine_params'] = []
         if args.reverse:
             results['rev_flow'] = []
+    metric_keys = []
+    def pick_data(idx, data):
+        '''idx: batch-dim mask'''
+        for k in data.keys():
+            if 'id' in k:
+                data[k] = [i for l,i in zip(idx, data[k]) if l]
+            else: data[k] = data[k][idx,...]
+        return data
+    if args.lmd:
+        jsn = json.load(open(args.lmk_json, 'r'))
     for iteration, data in tqdm(enumerate(val_loader)):
+        seg1, seg2 = data['segmentation1'], data['segmentation2']
+        if args.test_large:
+            large_idx = (seg2>1.5).sum(dim=(1,2,3,4))/(seg2>0.5).sum(dim=(1,2,3,4))
+            large_idx = large_idx ==0
+            if not large_idx.any(): continue
+            else: data = pick_data(large_idx, data)
+        if args.test_boundary:
+            seg2_surf = find_surf(seg2, 3)
+            seg2_surf_tumor = seg2_surf & (seg2>1.5)
+            bound_idx = (seg2_surf_tumor.sum(dim=(1,2,3,4))==0)
+            if not bound_idx.any(): continue
+            else: data=pick_data(bound_idx, data)
+        seg1, seg2 = data['segmentation1'], data['segmentation2']
+                
         fixed, moving = data['voxel1'], data['voxel2']
         id1, id2 = data['id1'], data['id2']
-        fixed = fixed.cuda()
-        moving = moving.cuda()
-        warped, flows, agg_flows, affine_params = model(fixed, moving, return_affine=True, return_neg=args.reverse)
+        with torch.no_grad():
+            fixed = fixed.cuda()
+            moving = moving.cuda()
+            if args.masked:
+                moving_ = torch.cat([moving, seg2.float().cuda()], dim=1)
+            else:
+                moving_ = moving
+            warped_, flows, agg_flows, affine_params = model(fixed, moving_, return_affine=True, return_neg=args.reverse)
+            warped = [i[:,:-1,...] for i in warped_]
         
         if args.save_pkl:
             magg_flows = torch.stack(agg_flows).transpose(0,1).detach().cpu()
@@ -90,9 +128,35 @@ def main():
                 results['rev_flow'].extend(re_flow)
             results['agg_flows'].extend(magg_flows)
             results['affine_params'].extend(affine_params['theta'].detach().cpu())
+        # metrics: landmark
+        if args.lmd:
+            for ix, ag_flow in enumerate(agg_flows):
+                # ag_flow = agg_flows[0].new_zeros(agg_flows[0].shape)
+                slc = np.s_[:]
+                lmk1 = ag_flow.new_tensor([jsn[i.split('_')[-1]][slc] for i in id1]) # n, m, 3
+                lmk2 = ag_flow.new_tensor([jsn[i.split('_')[-1]][slc] for i in id2]) # n, m, 3
+                lmk1_w = lmk1 - torch.stack([torch.stack([ag_flow[j, :, lmk1.long()[j,i,0], lmk1.long()[j,i,1], lmk1.long()[j,i,2]] \
+                    for i in range(lmk1.size(1))]) \
+                        for j in range(lmk1.size(0))])
+                lmk_err = (lmk2 - lmk1_w).norm(dim=-1).mean(dim=-1)
+                if f'{ix}_lmk_err' not in metric_keys:
+                    metric_keys.append(f'{ix}_lmk_err')
+                    results[f'{ix}_lmk_err'] = []
+                results[f'{ix}_lmk_err'].extend(lmk_err.cpu().numpy())
         # metrics: dice
         results['id1'].extend(id1)
         results['id2'].extend(id2)
+        # add tumor:liver ratio
+        tl1_ratio = (seg1>1.5).sum(dim=(1,2,3,4)).float() / (seg1>0.5).sum(dim=(1,2,3,4)).float()
+        tl2_ratio = (seg2>1.5).sum(dim=(1,2,3,4)).float() / (seg2>0.5).sum(dim=(1,2,3,4)).float()
+        if 'tl1_ratio' not in metric_keys:
+            metric_keys.append('tl1_ratio')
+            results['tl1_ratio'] = []
+        if 'tl2_ratio' not in metric_keys:
+            metric_keys.append('tl2_ratio')
+            results['tl2_ratio'] = []
+        results['tl1_ratio'].extend(tl1_ratio.cpu().numpy())
+        results['tl2_ratio'].extend(tl2_ratio.cpu().numpy())
         dices = []
         for k,v in segmentation_class_value.items():
             seg1 = data['segmentation1'].cuda() > v-0.5
@@ -102,24 +166,49 @@ def main():
             key = 'dice_{}'.format(k)
             if key not in results:
                 results[key] = []
+                metric_keys.append(key)
             results[key].extend(dice.cpu().numpy())
             dices.append(dice.cpu().numpy())
+            # calculate size ratio
+            original_size = torch.sum(seg2, dim=(1,2,3,4)).float()
+            current_size = torch.sum(w_seg2, dim=(1,2,3,4)).float()
+            size_ratio = current_size / original_size
+            key = '{}_ratio'.format(k)
+            if key not in results:
+                results[key] = []
+                metric_keys.append(key)
+            results[key].extend(size_ratio.cpu().numpy())
+        key = 'to_ratio'
+        if key not in results:
+            results[key] = []
+            metric_keys.append(key)
+        tumor_ratio = np.array(results['tumor_ratio'][-args.batch_size:])
+        organ_ration = np.array(results['liver_ratio'][-args.batch_size:])
+        to_ratio = tumor_ratio / organ_ration
+        results[key].extend(np.where(to_ratio<1, 1/to_ratio, to_ratio)**2)
+
+                
         del fixed, moving, warped, flows, agg_flows, affine_params
         # get mean of dice class
         results['dices'].extend(np.mean(dices, axis=0)) 
 
     # save result
     with open(output_fname, 'w') as fo:
-        keys = ['dice_{}'.format(k) for k in segmentation_class_value]
+        # list result keys (each one takes space 8)
+        print('{:<12}'.format('id1'), '{:<12}'.format('id2'), '{:<12}'.format('avg_dice'), *['{:<12}'.format(k) for k in metric_keys], file=fo)
         for i in range(len(results['dices'])):
-            print(results['id1'][i], results['id2'][i], np.mean(results['dices'][i]), *[results[k][i] for k in keys], file=fo)
+            print('{:<12}'.format(results['id1'][i]), '{:<12}'.format(results['id2'][i]), '{:<12.4f}'.format(np.mean(results['dices'][i])), 
+                *['{:<12.4f}'.format(results[k][i]) for k in metric_keys], file=fo)
+            # print(results['id1'][i], results['id2'][i], np.mean(results['dices'][i]), *[results[k][i] for k in metric_keys], file=fo)
+        # write summary
         print('Summary', file=fo)
         dices = results['dices']
         print("Dice score: {} ({})".format(np.mean(dices), np.std(
             np.mean(dices, axis=-1))), file=fo)
         # Dice score for organ and tumour
-        for dice_k in keys:
-            print("{}: {} ({})".format(dice_k, np.mean(results[dice_k]), np.std(results[dice_k])), file=fo)
+        for k in metric_keys:
+            # nan exclude
+            print("{}: {} ({})".format(k, np.nanmean(results[k]), np.nanstd(results[k])), file=fo)
 
     if args.save_pkl:
         pkl_name = output_fname.replace('.txt', '.pkl')
