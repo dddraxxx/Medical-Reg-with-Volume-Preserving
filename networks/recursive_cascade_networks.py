@@ -53,8 +53,9 @@ class RecursiveCascadeNetwork(nn.Module):
             for name, param in state_dict.items():
                 if name not in own_state:
                     continue
-                if '.conv1.1.weight' in name and param.size(1)==2: # in case we want to use model with in-channel 2 whiel the current in-channel is 3
+                if '.conv1.1.weight' in name and param.size(1)==2 and own_state[name].size(1)==3: # in case we want to use model with in-channel 2 whiel the current in-channel is 3
                     own_state[name][:,:2].copy_(param)
+                    print("In_channel is not the same, only copy the first two channels")
                     continue
                 if isinstance(param, nn.Parameter):
                     # backwards compatibility for serialized parameters

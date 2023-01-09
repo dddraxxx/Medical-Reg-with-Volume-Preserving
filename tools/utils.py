@@ -5,6 +5,30 @@ from PIL import Image
 
 tt = torch.as_tensor
 
+def interpolate_flow(flow, points):
+    '''flow: n, c, d, h, w
+    pionts: n, c, m'''
+    n, c, d, h, w = flow.size()
+    points = points.float()
+    points_1 = points.floor() # n,c,m
+    points_2 = points + points_1.new_tensor([1,0,0])[None,:,None]
+    points_3 = points + points_1.new_tensor([0,1,0])[None,:,None]
+    points_4 = points + points_1.new_tensor([0,0,1])[None,:,None]
+    points_5 = points + points_1.new_tensor([1,1,0])[None,:,None]
+    points_6 = points + points_1.new_tensor([1,0,1])[None,:,None]
+    points_7 = points + points_1.new_tensor([0,1,1])[None,:,None]
+    points_8 = points + points_1.new_tensor([1,1,1])[None,:,None]
+    p1_flow = flow[:, :, points_1[:,0].long(), points_1[:,1].long(), points_1[:,2].long()]
+    points_flow = flow[points_1] * (points_1 - points).abs().prod(dim=1, keepdim=True) + \
+                    points_2 * (points_2 - points).abs().prod(dim=1, keepdim=True) + \
+                    points_3 * (points_3 - points).abs().prod(dim=1, keepdim=True) + \
+                    points_4 * (points_4 - points).abs().prod(dim=1, keepdim=True) + \
+                    points_5 * (points_5 - points).abs().prod(dim=1, keepdim=True) + \
+                    points_6 * (points_6 - points).abs().prod(dim=1, keepdim=True) + \
+                    points_7 * (points_7 - points).abs().prod(dim=1, keepdim=True) + \
+                    points_8 * (points_8 - points).abs().prod(dim=1, keepdim=True)
+    return points_flow
+
 def load_model(state_dict, model):
     # load state dict
     model.stems.load_state_dict(state_dict['stem_state_dict'])
@@ -20,7 +44,7 @@ def load_model_from_dir(checkpoint_dir, model):
     load_model(torch.load(model_path), model)
     return model_path
 
-def visualize_3d(data, width=5, inter_dst=5, save_name=None, print_=False):
+def visualize_3d(data, width=5, inter_dst=5, save_name=None, print_=False, color_channel: int=None):
     """
     data: (S, H, W) or (N, C, H, W)"""
     data =tt(data)
@@ -33,12 +57,14 @@ def visualize_3d(data, width=5, inter_dst=5, save_name=None, print_=False):
     if img.dim() < 4:
         img = img[:, None]
     img = img[::inter_dst]
-    if print_:
-        print("Visualizing img with shape and type:", img.shape, img.dtype, "on path {}".format(save_name) if save_name else "")
+    if color_channel is not None:
+        img = img.movedim(color_channel, 1)
 
     img_f = make_grid(img, nrow=width, padding=5, pad_value=1, normalize=True)
     if save_name:
         save_image(img_f, save_name)
+        if print_:
+            print("Visualizing img with shape and type:", img.shape, img.dtype, "on path {}".format(save_name) if save_name else "")
         return range(0, img.shape[0], inter_dst)
     else:
         return img_f
@@ -72,10 +98,10 @@ class PyTMinMaxScalerVectorized(object):
 
 def draw_seg_on_vol(data, lb, if_norm=True, alpha=0.3, colors=["green", "red", "blue"]):
     """
-    data: 1, S, H, W
-    label: N, S, H, W (binary value or bool)"""
-    lb = tt(lb).float()
-    data =tt(data).float()
+    data: (1,) S, H, W
+    label: (N,) S, H, W (binary value or bool)"""
+    lb = tt(lb).float().reshape(-1, *lb.shape[-3:])
+    data =tt(data).float().reshape(1, *data.shape[-3:])
     if if_norm:
         data = norm(data, 3)
     data = (data*255).cpu().to(torch.uint8)
@@ -89,14 +115,17 @@ def draw_seg_on_vol(data, lb, if_norm=True, alpha=0.3, colors=["green", "red", "
                         ))
     return torch.stack(res)/255
     
-def show_img(res):
+def show_img(res, save_path=None):
     import torchvision.transforms as T
     res = tt(res)
     if res.ndim>=3:
         return T.ToPILImage()(visualize_3d(res))
     # normalize res
     res = (res-res.min())/(res.max()-res.min())
-    return T.ToPILImage()(res)
+    pimg = T.ToPILImage()(res)
+    if save_path:
+        pimg.save(save_path)
+    return pimg
 
 from PIL import Image
 def combine_pil_img(*ims):

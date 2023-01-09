@@ -50,54 +50,31 @@ def plot_grid(ax, flow, factor=10):
     ax.add_collection(LineCollection(segs2, color='black', linewidths=0.8))
     ax.autoscale()
 
-
-def generate_plots(fixed, moving, warped, flows, train_loss, val_loss, reg_loss, epoch):
-    """ Save some images and plots during training"""
-    moving = moving.detach().cpu().numpy()
-    fixed = fixed.detach().cpu().numpy()
-    warped = [w.detach().cpu().numpy() for w in warped]
-    flows = [f.detach().cpu().numpy() for f in flows]
-
-    fig = plt.figure(constrained_layout=True, figsize=(4 * 5, 4 * 3))
-    ax_dict = fig.subplot_mosaic("""
-                                 FABCD
-                                 LGHIE
-                                 MKJWX
-                                 """)
-
-    ax_dict['F'].imshow(moving[0, 0, ...], cmap='gray')
-    ax_dict['F'].set_title('Moving')
-
-    ax_dict['W'].imshow(fixed[0, 0, ...], cmap='gray')
-    ax_dict['W'].set_title('Fixed')
-
-    for i, ax_name in enumerate(list("ABCDEX")):
-        ax_dict[ax_name].imshow(warped[i][0, 0, ...], cmap='gray')
-        if ax_name == "A":
-            ax_dict[ax_name].set_title("Affine")
-        else:
-            ax_dict[ax_name].set_title(f"Cascade {i}")
-
-    ax_dict['L'].plot(train_loss, color='red', label='train_loss')
-    ax_dict['L'].plot(val_loss, label='val_loss', color='blue')
-    ax_dict['L'].plot(reg_loss, label='train_reg_loss', color='green')
-    ax_dict['L'].set_title("Losses")
-    ax_dict['L'].grid()
-    ax_dict['L'].set_xlim(0, args.e)
-    ax_dict['L'].legend(loc='upper right')
-    ax_dict['L'].scatter(len(train_loss) - 1, train_loss[-1], s=20, color='red')
-    ax_dict['L'].scatter(len(val_loss) - 1, val_loss[-1], s=20, color='blue')
-    ax_dict['L'].scatter(len(reg_loss) - 1, reg_loss[-1], s=20, color='green')
-
-    for i, ax_name in enumerate(list("GHIJKM")):
-        plot_grid(ax_dict[ax_name], flows[i][0, ...])
-        if ax_name == "G":
-            ax_dict[ax_name].set_title("Affine")
-        else:
-            ax_dict[ax_name].set_title(f"Cascade {i}")
-
-    plt.suptitle(f"Epoch {epoch}")
-    plt.savefig(f'./ckp/visualization/epoch_{epoch}.png')
+def plot_landmarks(img, landmarks, fig=None, ax=None, save_path=None, every_n = 3, color='red',size=10):
+    img = img.cpu().numpy()
+    landmarks = landmarks.cpu().numpy()
+    if fig is None:
+        fig = plt.figure(figsize=(10, 10))
+    if ax is None:
+        axes = fig.subplots(len(landmarks), 5)
+    else: axes = ax
+    # calculate idx to be visualized
+    for i in range(landmarks.shape[0]):
+        x0 = landmarks[i, 0]
+        axes[i,2].scatter(landmarks[i, 2], landmarks[i, 1], s=size, c=color, marker='x')
+        if ax is None:
+            axes[i,0].imshow(img[int(x0)-2*every_n, ...], cmap='gray')
+            axes[i,1].imshow(img[int(x0)-every_n, ...], cmap='gray')
+            axes[i,2].imshow(img[int(x0), ...], cmap='gray')
+            axes[i,3].imshow(img[int(x0)+every_n, ...], cmap='gray')
+            axes[i,4].imshow(img[int(x0)+2*every_n, ...], cmap='gray')
+    # tight layout and no axis
+    fig.tight_layout()
+    for ax in fig.get_axes():
+        ax.axis('off')
+    if save_path is not None:
+        plt.savefig(save_path)
+    return fig, axes
 
 if __name__=='__main__':
     #%%
