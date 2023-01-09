@@ -5,11 +5,11 @@ import pickle
 import json
 import re
 import numpy as np
-from metrics.losses import score_metrics, find_surf
+from metrics.losses import dice_jaccard, find_surf
 from tqdm import tqdm
 from torch.utils.data import Dataset, DataLoader
 import torch
-
+from metrics.surface_distance import *
 from networks.recursive_cascade_networks import RecursiveCascadeNetwork
 from data_util.dataset import Data, Split
 
@@ -36,6 +36,10 @@ parser.add_argument('-tb','--test_boundary', action='store_true', help='If test 
 parser.add_argument('-lm', '--lmd', action='store_true', help='If test landmark locations')
 parser.add_argument('--lmk_json', type=str, default='/home/hynx/regis/recursive-cascaded-networks/datasets/lits17_landmark.json', help='landmark for eval files')
 parser.add_argument('-m', '--masked', action='store_true', help='If model need masks')
+parser.add_argument('-lm_r', '--lmk_radius', type=int, default=10, help='affected landmark within radius')
+parser.add_argument('-vl', '--visual_lmk', action='store_true', help='If visualize landmark')
+parser.add_argument('-rd', '--region_dice', default=True, type=lambda x: x.lower() in ['true', '1', 't', 'y', 'yes'], help='If calculate dice for each region')
+parser.add_argument('-sd', '--surf_dist', default=True, type=lambda x: x.lower() in ['true', '1', 't', 'y', 'yes'], help='If calculate dist for each surface')
 args = parser.parse_args()
 if args.checkpoint == 'normal':
     args.checkpoint = '/home/hynx/regis/recursive-cascaded-networks/logs/Dec27_133859_normal/model_wts'
@@ -118,7 +122,8 @@ def main():
             else:
                 moving_ = moving
             warped_, flows, agg_flows, affine_params = model(fixed, moving_, return_affine=True, return_neg=args.reverse)
-            warped = [i[:,:-1,...] for i in warped_]
+            warped = [i[:,:1,...] for i in warped_]
+            w_seg2 = model.reconstruction(seg2.float().cuda(), agg_flows[-1].float())
         
         if args.save_pkl:
             magg_flows = torch.stack(agg_flows).transpose(0,1).detach().cpu()
@@ -133,17 +138,51 @@ def main():
             for ix, ag_flow in enumerate(agg_flows):
                 # ag_flow = agg_flows[0].new_zeros(agg_flows[0].shape)
                 slc = np.s_[:]
-                lmk1 = ag_flow.new_tensor([jsn[i.split('_')[-1]][slc] for i in id1]) # n, m, 3
+                lmk1 : torch.Tensor = ag_flow.new_tensor([jsn[i.split('_')[-1]][slc] for i in id1]) # n, m, 3
                 lmk2 = ag_flow.new_tensor([jsn[i.split('_')[-1]][slc] for i in id2]) # n, m, 3
-                lmk1_w = lmk1 - torch.stack([torch.stack([ag_flow[j, :, lmk1.long()[j,i,0], lmk1.long()[j,i,1], lmk1.long()[j,i,2]] \
+                # exclude landmarks that is close to tumor
+                lmk1_w = lmk1 + torch.stack([torch.stack([ag_flow[j, :][([0,1,2],*lmk1[j,i].long())] \
                     for i in range(lmk1.size(1))]) \
                         for j in range(lmk1.size(0))])
-                lmk_err = (lmk2 - lmk1_w).norm(dim=-1).mean(dim=-1)
+                if args.lmk_radius>0:
+                    seg2_tumor = seg2.cuda()>1.5
+                    # pick index that is not close to tumor
+                    radius = args.lmk_radius
+                    points = [] # n,3
+                    for z in range(-10,10):
+                        for y in range(-10,10):
+                            for x in range(-10,10):
+                                if x**2+y**2+z**2 <= radius**2:
+                                    points.append([x,y,z])
+                    points = ag_flow.new_tensor(points).long()
+                    l2_x_coordinate = lmk2.long()[:, :, None, 0] + points[:,0] # n,m,10*10*10
+                    l2_y_coordinate = lmk2.long()[:, :, None, 1] + points[:,1]
+                    l2_z_coordinate = lmk2.long()[:, :, None, 2] + points[:,2]
+                    l2_batch_coordinate = torch.arange(lmk2.shape[0])[:, None, None] # n, 1, 1
+                    seg2_lmk_neighbor = seg2_tumor[:,0][l2_batch_coordinate, l2_x_coordinate, l2_y_coordinate, l2_z_coordinate] # n,m,10*10*10
+                    selected = (seg2_lmk_neighbor.sum(dim=-1)==0) # n,m
+                    # show selected
+                    # print('landmark selected: {}'.format(selected.sum(-1).tolist()))
+                    lmk_err = ((lmk2 - lmk1_w).norm(dim=-1)*selected).sum(-1)/selected.sum(-1) # n,m
+                else:
+                    lmk_err = (lmk2 - lmk1_w).norm(dim=-1).mean(-1)
                 if f'{ix}_lmk_err' not in metric_keys:
                     metric_keys.append(f'{ix}_lmk_err')
                     results[f'{ix}_lmk_err'] = []
                 results[f'{ix}_lmk_err'].extend(lmk_err.cpu().numpy())
-        # metrics: dice
+
+                # visualize landmarks
+                if args.visual_lmk:
+                    from tools.visualization import plot_landmarks
+                    if not os.path.exists(f'./images/landmarks/{id1[ix]}_fixed.png'):
+                        fig, axes = plot_landmarks(fixed[ix,0], lmk1[ix], save_path=f'./images/landmarks/{id1[ix]}_fixed.png')
+                    moving_dir = './images/landmarks/{}'.format(args.checkpoint.split('/')[-2])
+                    # mkdir
+                    if not os.path.exists(moving_dir):
+                        os.mkdir(moving_dir)
+                    # plot_landmarks(fixed[ix,0], lmk1_w[ix], fig=fig, ax=axes, color='yellow', save_path=f'{moving_dir}/{id1[ix]}_{id2[ix]}_fiexd.png')
+                    plot_landmarks(warped[-1][ix,0], lmk2[ix], save_path=f'{moving_dir}/{id1[ix]}_{id2[ix]}_warped.png',size=0)
+
         results['id1'].extend(id1)
         results['id2'].extend(id2)
         # add tumor:liver ratio
@@ -158,17 +197,64 @@ def main():
         results['tl1_ratio'].extend(tl1_ratio.cpu().numpy())
         results['tl2_ratio'].extend(tl2_ratio.cpu().numpy())
         dices = []
+        ### Debug use
+        pairs = list(zip(id1, id2))
+        # target_pair = ('lits_{}'.format(84), 'lits_{}'.format(40))
+        # target_pair = ('lits_51', '51')
+        # target_pair = ('lits_{}'.format(47), 'lits_{}'.format(51))
+        target_pair = ('lits_{}'.format(106), 'lits_{}'.format(53))
+        if target_pair in pairs:
+            from tools.utils import visualize_3d, draw_seg_on_vol, show_img
+            pair_id = pairs.index(target_pair)
+            pairs_img = [fixed[pair_id,0], moving[pair_id,0], warped[-1][pair_id,0]]
+            # get largest component
+            from skimage.measure import label
+            from skimage.color import label2rgb
+            pairs_seg = [seg1[pair_id,0]>1.5, seg2[pair_id,0]>1.5, w_seg2[pair_id,0]>1.5]
+            labels = [label(i.cpu()) for i in pairs_seg]
+            # warped labels[1]
+            labels[2] = model.reconstruction(\
+                torch.tensor(labels[1]).float().cuda()[None, None],\
+                 agg_flows[-1][pair_id].unsqueeze(0), \
+                    mode='nearest')[0,0]
+            labels[2] = labels[2].long().cpu().numpy()
+            pairs_draw = [label2rgb(labels[i], pairs_img[i].cpu().numpy(), bg_label=0) for i in range(3)]
+            # pairs_draw = [draw_seg_on_vol(pairs_img[i], pairs_seg[i]) for i in range(3)]
+            save_dir = './images/tmp/'
+            if not os.path.exists(save_dir):
+                os.mkdir(save_dir)
+            visualize_3d(pairs_draw[0], save_name=save_dir+'{}_s.png'.format(pairs[pair_id][0]), print_=True, color_channel=3)
+            visualize_3d(pairs_draw[1], save_name=save_dir+'{}_s.png'.format(pairs[pair_id][1]), color_channel=3)
+            visualize_3d(pairs_draw[2], save_name=save_dir+'warped_s.png', color_channel=3)
+            visualize_3d(pairs_img[0], save_name=save_dir+'{}.png'.format(pairs[pair_id][0]), print_=True)
+            visualize_3d(pairs_img[1], save_name=save_dir+'{}.png'.format(pairs[pair_id][1]))
+            visualize_3d(pairs_img[2], save_name=save_dir+'warped.png')
+            print('save to {}'.format(save_dir))
+        # else:
+        #     continue
+
         for k,v in segmentation_class_value.items():
-            seg1 = data['segmentation1'].cuda() > v-0.5
-            seg2 = data['segmentation2'].cuda() > v-0.5
+            if args.region_dice:
+                seg1 = data['segmentation1'].cuda() > v-0.5
+                seg2 = data['segmentation2'].cuda() > v-0.5
+            else:
+                seg1 = data['segmentation1'].cuda() == v
+                seg2 = data['segmentation2'].cuda() == v
             w_seg2 = model.reconstruction(seg2.float(), agg_flows[-1].float()) > 0.5
-            dice, jac = score_metrics(seg1, w_seg2)
+            dice, jac = dice_jaccard(seg1, w_seg2)
             key = 'dice_{}'.format(k)
             if key not in results:
                 results[key] = []
                 metric_keys.append(key)
             results[key].extend(dice.cpu().numpy())
             dices.append(dice.cpu().numpy())
+            # add original dice
+            original_dice, _ = dice_jaccard(seg1, seg2)
+            key = 'o_dice_{}'.format(k)
+            if key not in results:
+                results[key] = []
+                metric_keys.append(key)
+            results[key].extend(original_dice.cpu().numpy())
             # calculate size ratio
             original_size = torch.sum(seg2, dim=(1,2,3,4)).float()
             current_size = torch.sum(w_seg2, dim=(1,2,3,4)).float()
@@ -178,13 +264,38 @@ def main():
                 results[key] = []
                 metric_keys.append(key)
             results[key].extend(size_ratio.cpu().numpy())
+
+            ### Calculate surface deviation metrics (surface_dice, hd-95)
+            if args.surf_dist:
+                key = 'hd95_{}'.format(k)
+                surface_distance = [compute_surface_distances(seg1.cpu().numpy()[i,0], w_seg2.cpu().numpy()[i,0]) for i in range(seg1.shape[0])]
+
+                hd95 = [compute_robust_hausdorff(s, 95) for s in surface_distance]
+                if key not in results:
+                    results[key] = []
+                    metric_keys.append(key)
+                results[key].extend(hd95)
+                # surface dice
+                key = 'sdice_{}'.format(k)
+                surface_dice = [compute_surface_dice_at_tolerance(s, 5) for s in surface_distance]
+                if key not in results:
+                    results[key] = []
+                    metric_keys.append(key)
+                results[key].extend(surface_dice)
+                # average surface distance
+                key = 'asd_{}'.format(k)
+                asd = [compute_average_surface_distance(s)[1] for s in surface_distance]
+                if key not in results:
+                    results[key] = []
+                    metric_keys.append(key)
+                results[key].extend(asd)
         key = 'to_ratio'
         if key not in results:
             results[key] = []
             metric_keys.append(key)
         tumor_ratio = np.array(results['tumor_ratio'][-args.batch_size:])
-        organ_ration = np.array(results['liver_ratio'][-args.batch_size:])
-        to_ratio = tumor_ratio / organ_ration
+        organ_ratio = np.array(results['liver_ratio'][-args.batch_size:])
+        to_ratio = tumor_ratio / organ_ratio
         results[key].extend(np.where(to_ratio<1, 1/to_ratio, to_ratio)**2)
 
                 
