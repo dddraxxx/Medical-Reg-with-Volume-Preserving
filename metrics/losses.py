@@ -64,7 +64,7 @@ def dice_loss(fixed_mask, warped):
 
     return 1 - dice
 
-def score_metrics(seg1: torch.Tensor, seg2: torch.Tensor):
+def dice_jaccard(seg1: torch.Tensor, seg2: torch.Tensor):
     seg1 = seg1.flatten(1)
     seg2 = seg2.flatten(1)
     intersection = (seg1 * seg2).sum(1)

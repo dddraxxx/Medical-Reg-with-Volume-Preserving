@@ -48,7 +48,7 @@ class FileManager:
 
 
 class Data(Dataset):
-    def __init__(self, split_path, rounds=None, affine=None, paired=False, scheme=None):
+    def __init__(self, split_path, rounds=None, affine=None, paired=False, scheme=None, **kwargs):
         with open(split_path, 'r') as f:
             config = json.load(f)
         self.files = FileManager(config['files'])
@@ -106,10 +106,25 @@ class Data(Dataset):
     def get_pairs_with_gt(self, dct):
         pairs = []
         for k in dct:
-            for v in dct[k]['id2']:
-                i2 = dict(dct[k]['id2'][v])
-                i2['id'] = v
-                pairs.append((dct[k], i2))
+            if 'id2' not in dct[k]:
+                not_added=True
+                for v in dct:
+                    if v != k and 'id2' in dct[v]:
+                        for v2 in dct[v]['id2']:
+                            if 'lits/{}'.format(v2) == k:
+                                i2 = dict(dct[v]['id2'][v2])
+                                i2['id'] = v2
+                                pairs.append((dct[k], i2))
+                                pairs.append((i2, dct[k]))
+                                not_added=False
+                                break
+                    if not_added==False:
+                        break
+            else:
+                for v in dct[k]['id2']:
+                    i2 = dict(dct[k]['id2'][v])
+                    i2['id'] = v
+                    pairs.append((dct[k], i2))
         return pairs
     
     def __len__(self):

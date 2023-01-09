@@ -10,7 +10,7 @@ from networks.recursive_cascade_networks import RecursiveCascadeNetwork
 from torch.optim import Adam
 from torch.optim.lr_scheduler import StepLR
 from torch.utils.data import DataLoader
-from metrics.losses import det_loss, jacobian_det, masked_sim_loss, ortho_loss, reg_loss, score_metrics, sim_loss, surf_loss
+from metrics.losses import det_loss, jacobian_det, masked_sim_loss, ortho_loss, reg_loss, dice_jaccard, sim_loss, surf_loss
 import datetime as datetime
 from torch.utils.tensorboard import SummaryWriter
 # from data_util.ctscan import sample_generator
@@ -367,7 +367,7 @@ def main():
                                 seg1 = data['segmentation1'].cuda() > v-0.5
                                 seg2 = data['segmentation2'].cuda() > v-0.5
                                 w_seg2 = mmodel.reconstruction(seg2.float(), agg_flows[-1].float()) > 0.5
-                                dice, jac = score_metrics(seg1, w_seg2)
+                                dice, jac = dice_jaccard(seg1, w_seg2)
                                 dice_loss[k] += dice.mean().item()
                     tb_imgs['img1'] = fixed
                     tb_imgs['img2'] = moving
