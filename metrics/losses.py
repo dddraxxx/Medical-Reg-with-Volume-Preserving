@@ -116,8 +116,8 @@ def sim_loss(fixed, moving, soft_mask=None):
     return sim_loss
 
 def masked_sim_loss(fixed, moving, mask, soft_weight=None):
-    flatten_fixed = torch.flatten(fixed, start_dim=1)
-    flatten_warped = torch.flatten(moving, start_dim=1)
+    flatten_fixed = torch.flatten(fixed, start_dim=1).clone()
+    flatten_warped = torch.flatten(moving, start_dim=1).clone()
     flatten_mask = torch.flatten(mask, start_dim=1)
     # get masked mean: non-masked sum / non-masked count
     flatten_fixed[flatten_mask] = 0
