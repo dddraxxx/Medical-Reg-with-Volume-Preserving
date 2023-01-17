@@ -38,16 +38,22 @@ def load_model_from_dir(checkpoint_dir, model):
     # glob file with suffix pth
     from pathlib import Path as pa
     import re
-    p = pa(checkpoint_dir).glob('*.pth')
+    p = pa(checkpoint_dir)
+    # check if p has subdir named model_wts
+    if (p/'model_wts').exists():
+        p = p/'model_wts'
+    p = p.glob('*.pth')
     p = sorted(p, key=lambda x: [int(n) for n in re.findall(r'\d+', str(x))])
     model_path = str(p[-1])
     load_model(torch.load(model_path), model)
     return model_path
 
-def visualize_3d(data, width=5, inter_dst=5, save_name=None, print_=False, color_channel: int=None):
+def visualize_3d(data, width=5, inter_dst=5, save_name=None, print_=False, color_channel: int=None, norm: bool=False):
     """
     data: (S, H, W) or (N, C, H, W)"""
     data =tt(data)
+    if norm:
+        data = norm(data)
     img = data.float()
     # st = torch.tensor([76, 212, 226])
     # end = st+128
@@ -56,15 +62,15 @@ def visualize_3d(data, width=5, inter_dst=5, save_name=None, print_=False, color
         img = torch.from_numpy(img).float()
     if img.dim() < 4:
         img = img[:, None]
-    img = img[::inter_dst]
+    img_s = img[::inter_dst]
     if color_channel is not None:
-        img = img.movedim(color_channel, 1)
+        img_s = img_s.movedim(color_channel, 1)
 
-    img_f = make_grid(img, nrow=width, padding=5, pad_value=1, normalize=True)
+    img_f = make_grid(img_s, nrow=width, padding=5, pad_value=1, normalize=True)
     if save_name:
         save_image(img_f, save_name)
         if print_:
-            print("Visualizing img with shape and type:", img.shape, img.dtype, "on path {}".format(save_name) if save_name else "")
+            print("Visualizing img with shape and type:", img_s.shape, img_s.dtype, "on path {}".format(save_name) if save_name else "")
         return range(0, img.shape[0], inter_dst)
     else:
         return img_f
