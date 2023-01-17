@@ -1,3 +1,4 @@
+from pathlib import Path as pa
 import argparse
 from genericpath import isfile
 import os
@@ -40,6 +41,7 @@ parser.add_argument('-lm_r', '--lmk_radius', type=int, default=10, help='affecte
 parser.add_argument('-vl', '--visual_lmk', action='store_true', help='If visualize landmark')
 parser.add_argument('-rd', '--region_dice', default=True, type=lambda x: x.lower() in ['true', '1', 't', 'y', 'yes'], help='If calculate dice for each region')
 parser.add_argument('-sd', '--surf_dist', default=True, type=lambda x: x.lower() in ['true', '1', 't', 'y', 'yes'], help='If calculate dist for each surface')
+parser.add_argument('-only_vis', '--only_vis_target', action='store_true', help='If only visualize target')
 args = parser.parse_args()
 if args.checkpoint == 'normal':
     args.checkpoint = '/home/hynx/regis/recursive-cascaded-networks/logs/Dec27_133859_normal/model_wts'
@@ -74,9 +76,6 @@ def main():
     # "([^\/]*_\d{6}_[^\/]*)"gm
     exp_name = re.search(r"([^\/]*_\d{6}_[^\/]*)", model_path).group(1)
     output_fname = './evaluations/{}_{}_{}.txt'.format(exp_name, args.val_subset or Split.VALID, args.name or '')
-    print('Saving to {}'.format(output_fname))
-    # create dir
-    os.makedirs(os.path.dirname(output_fname), exist_ok=True)
 
     # run val
     model.eval()
@@ -183,6 +182,48 @@ def main():
                     # plot_landmarks(fixed[ix,0], lmk1_w[ix], fig=fig, ax=axes, color='yellow', save_path=f'{moving_dir}/{id1[ix]}_{id2[ix]}_fiexd.png')
                     plot_landmarks(warped[-1][ix,0], lmk2[ix], save_path=f'{moving_dir}/{id1[ix]}_{id2[ix]}_warped.png',size=0)
 
+        ### Debug use
+        pairs = list(zip(id1, id2))
+        # target_pair = ('lits_{}'.format(84), 'lits_{}'.format(40))
+        # target_pair = ('lits_51', '51')
+        # target_pairs = [('lits_{}'.format(51), 'lits_{}'.format(33))]
+        target_pair = ('lits_{}'.format(51), 'yanx_{}'.format(14))
+        # target_pair = ('lits_{}'.format(115), 'lits_{}'.format(128))
+        # if any([p in pairs for p in target_pairs]):
+        if target_pair in pairs:
+            from tools.utils import visualize_3d, draw_seg_on_vol, show_img
+            pair_id = pairs.index(target_pair)
+            pairs_img = [fixed[pair_id,0], moving[pair_id,0], warped[-1][pair_id,0]]
+            # get largest component
+            from skimage.measure import label
+            from skimage.color import label2rgb
+            pairs_seg_organ = [seg1[pair_id,0]>0.5, seg2[pair_id,0]>0.5, w_seg2[pair_id,0]>0.5]
+            pairs_seg = [seg1[pair_id,0]>1.5, seg2[pair_id,0]>1.5, w_seg2[pair_id,0]>1.5]
+            labels = [label(i.cpu()) for i in pairs_seg]
+            # warped labels[1]
+            labels[2] = model.reconstruction(\
+                torch.tensor(labels[1]).float().cuda()[None, None],\
+                 agg_flows[-1][pair_id].unsqueeze(0), \
+                    mode='nearest')[0,0]
+            labels[2] = labels[2].long().cpu().numpy()
+            pairs_draw = [label2rgb(labels[i], pairs_img[i].cpu().numpy(), bg_label=0) for i in range(3)]
+            pairs_draw_organ = [draw_seg_on_vol(pairs_img[i], pairs_seg_organ[i]) for i in range(3)]
+            save_dir = pa('./images/tmp/{}/'.format(args.checkpoint.split('/')[-2]))
+            if not os.path.exists(save_dir):
+                os.mkdir(save_dir)
+            visualize_3d(pairs_draw_organ[0], save_name=save_dir.parent/'{}_so.png'.format(pairs[pair_id][0]), print_=True, color_channel=1)
+            visualize_3d(pairs_draw_organ[1], save_name=save_dir.parent/'{}_so.png'.format(pairs[pair_id][1]), color_channel=1)
+            visualize_3d(pairs_draw_organ[2], save_name=save_dir / '{}_{}_warped_so.png'.format(*pairs[pair_id]), color_channel=1)
+            visualize_3d(pairs_draw[0], save_name=save_dir.parent / '{}_s.png'.format(pairs[pair_id][0]), print_=True, color_channel=3)
+            visualize_3d(pairs_draw[1], save_name=save_dir.parent / '{}_s.png'.format(pairs[pair_id][1]), color_channel=3)
+            visualize_3d(pairs_draw[2], save_name=save_dir / '{}_{}_warped_s.png'.format(*pairs[pair_id]), color_channel=3)
+            visualize_3d(pairs_img[0], save_name=save_dir.parent / '{}.png'.format(pairs[pair_id][0]), print_=True)
+            visualize_3d(pairs_img[1], save_name=save_dir.parent / '{}.png'.format(pairs[pair_id][1]))
+            visualize_3d(pairs_img[2], save_name=save_dir / '{}_{}_warped.png'.format(*pairs[pair_id]))
+            print('save to {}'.format(save_dir))
+            if args.only_vis_target: quit()
+        elif args.only_vis_target:
+            continue
         results['id1'].extend(id1)
         results['id2'].extend(id2)
         # add tumor:liver ratio
@@ -197,41 +238,6 @@ def main():
         results['tl1_ratio'].extend(tl1_ratio.cpu().numpy())
         results['tl2_ratio'].extend(tl2_ratio.cpu().numpy())
         dices = []
-        ### Debug use
-        pairs = list(zip(id1, id2))
-        # target_pair = ('lits_{}'.format(84), 'lits_{}'.format(40))
-        # target_pair = ('lits_51', '51')
-        # target_pair = ('lits_{}'.format(47), 'lits_{}'.format(51))
-        target_pair = ('lits_{}'.format(106), 'lits_{}'.format(53))
-        if target_pair in pairs:
-            from tools.utils import visualize_3d, draw_seg_on_vol, show_img
-            pair_id = pairs.index(target_pair)
-            pairs_img = [fixed[pair_id,0], moving[pair_id,0], warped[-1][pair_id,0]]
-            # get largest component
-            from skimage.measure import label
-            from skimage.color import label2rgb
-            pairs_seg = [seg1[pair_id,0]>1.5, seg2[pair_id,0]>1.5, w_seg2[pair_id,0]>1.5]
-            labels = [label(i.cpu()) for i in pairs_seg]
-            # warped labels[1]
-            labels[2] = model.reconstruction(\
-                torch.tensor(labels[1]).float().cuda()[None, None],\
-                 agg_flows[-1][pair_id].unsqueeze(0), \
-                    mode='nearest')[0,0]
-            labels[2] = labels[2].long().cpu().numpy()
-            pairs_draw = [label2rgb(labels[i], pairs_img[i].cpu().numpy(), bg_label=0) for i in range(3)]
-            # pairs_draw = [draw_seg_on_vol(pairs_img[i], pairs_seg[i]) for i in range(3)]
-            save_dir = './images/tmp/'
-            if not os.path.exists(save_dir):
-                os.mkdir(save_dir)
-            visualize_3d(pairs_draw[0], save_name=save_dir+'{}_s.png'.format(pairs[pair_id][0]), print_=True, color_channel=3)
-            visualize_3d(pairs_draw[1], save_name=save_dir+'{}_s.png'.format(pairs[pair_id][1]), color_channel=3)
-            visualize_3d(pairs_draw[2], save_name=save_dir+'warped_s.png', color_channel=3)
-            visualize_3d(pairs_img[0], save_name=save_dir+'{}.png'.format(pairs[pair_id][0]), print_=True)
-            visualize_3d(pairs_img[1], save_name=save_dir+'{}.png'.format(pairs[pair_id][1]))
-            visualize_3d(pairs_img[2], save_name=save_dir+'warped.png')
-            print('save to {}'.format(save_dir))
-        # else:
-        #     continue
 
         for k,v in segmentation_class_value.items():
             if args.region_dice:
@@ -321,6 +327,9 @@ def main():
             # nan exclude
             print("{}: {} ({})".format(k, np.nanmean(results[k]), np.nanstd(results[k])), file=fo)
 
+    print('Saving to {}'.format(output_fname))
+    # create dir
+    os.makedirs(os.path.dirname(output_fname), exist_ok=True)
     if args.save_pkl:
         pkl_name = output_fname.replace('.txt', '.pkl')
         with open(pkl_name, 'wb') as fo:
