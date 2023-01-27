@@ -64,10 +64,16 @@ def plot_landmarks(img, landmarks, fig=None, ax=None, save_path=None, every_n = 
         axes[i,2].scatter(landmarks[i, 2], landmarks[i, 1], s=size, c=color, marker='x')
         if ax is None:
             axes[i,0].imshow(img[int(x0)-2*every_n, ...], cmap='gray')
+            # caption
+            axes[i,0].set_title(f'{int(x0)-2*every_n}')
             axes[i,1].imshow(img[int(x0)-every_n, ...], cmap='gray')
+            axes[i,1].set_title(f'{int(x0)-every_n}')
             axes[i,2].imshow(img[int(x0), ...], cmap='gray')
+            axes[i,2].set_title(f'{int(x0)}, ({landmarks[i, 0]}, {landmarks[i, 1]}, {landmarks[i, 2]})')
             axes[i,3].imshow(img[int(x0)+every_n, ...], cmap='gray')
+            axes[i,3].set_title(f'{int(x0)+every_n}')
             axes[i,4].imshow(img[int(x0)+2*every_n, ...], cmap='gray')
+            axes[i,4].set_title(f'{int(x0)+2*every_n}')
     # tight layout and no axis
     fig.tight_layout()
     for ax in fig.get_axes():

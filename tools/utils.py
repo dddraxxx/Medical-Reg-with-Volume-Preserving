@@ -48,6 +48,12 @@ def load_model_from_dir(checkpoint_dir, model):
     load_model(torch.load(model_path), model)
     return model_path
 
+import frnn
+def get_nearest(ref, points, k, picked_points):
+    dists, idxs, nn, grid = frnn.frnn_grid_points(points, ref, K=k, r=20, return_nn=False)
+    nearest_points = frnn.frnn_gather(picked_points, idxs, k)
+    return nearest_points
+
 def visualize_3d(data, width=5, inter_dst=5, save_name=None, print_=False, color_channel: int=None, norm: bool=False):
     """
     data: (S, H, W) or (N, C, H, W)"""
