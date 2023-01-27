@@ -6,3 +6,4 @@ evaluations/*
 *.png
 *.jpg
 .ipynb_checkpoints
+eval_excel/

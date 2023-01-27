@@ -5,6 +5,7 @@ import os
 import pickle
 import json
 import re
+from matplotlib import pyplot as plt
 import numpy as np
 from metrics.losses import dice_jaccard, find_surf
 from tqdm import tqdm
@@ -75,7 +76,8 @@ def main():
     import re
     # "([^\/]*_\d{6}_[^\/]*)"gm
     exp_name = re.search(r"([^\/]*_\d{6}_[^\/]*)", model_path).group(1)
-    output_fname = './evaluations/{}_{}_{}.txt'.format(exp_name, args.val_subset or Split.VALID, args.name or '')
+    output_fname = './evaluations/{}_{}{}_{}.txt'.format(exp_name, (args.name and f'{args.name}_') or '', args.val_subset or Split.VALID, '' if not args.lmd else 'lm{}'.format(args.lmk_radius))
+    print('will save to', output_fname)
 
     # run val
     model.eval()
@@ -137,8 +139,14 @@ def main():
             for ix, ag_flow in enumerate(agg_flows):
                 # ag_flow = agg_flows[0].new_zeros(agg_flows[0].shape)
                 slc = np.s_[:]
-                lmk1 : torch.Tensor = ag_flow.new_tensor([jsn[i.split('_')[-1]][slc] for i in id1]) # n, m, 3
-                lmk2 = ag_flow.new_tensor([jsn[i.split('_')[-1]][slc] for i in id2]) # n, m, 3
+                if 'point1' in data and not (data['point1']==-1).any():
+                    lmk1 = data['point1'].squeeze().cuda()
+                else:
+                    lmk1 : torch.Tensor = ag_flow.new_tensor([jsn[i.split('_')[-1]][slc] for i in id1]) # n, m, 3
+                if 'point2' in data and not (data['point2']==-1).any():
+                    lmk2 = data['point2'].squeeze().cuda() 
+                else:
+                    lmk2 = ag_flow.new_tensor([jsn[i.split('_')[-1]][slc] for i in id2]) # n, m, 3
                 # exclude landmarks that is close to tumor
                 lmk1_w = lmk1 + torch.stack([torch.stack([ag_flow[j, :][([0,1,2],*lmk1[j,i].long())] \
                     for i in range(lmk1.size(1))]) \
@@ -171,16 +179,34 @@ def main():
                 results[f'{ix}_lmk_err'].extend(lmk_err.cpu().numpy())
 
                 # visualize landmarks
-                if args.visual_lmk:
+            if args.visual_lmk:
+                from tools.utils import get_nearest
+                flow = agg_flows[-1].squeeze()
+                points = torch.meshgrid([torch.arange(flow.shape[2]), torch.arange(flow.shape[3]), torch.arange(flow.shape[4])], indexing='ij')
+                points = torch.stack(points).to(flow.device)
+                flowed_points = points + flow
+                flowed_points = flowed_points.permute(0,2,3,4,1).reshape(args.batch_size,-1,3)
+                flow = flow.permute(0,2,3,4,1).reshape(args.batch_size,-1,3)
+                flow_lmk2 = get_nearest(flowed_points, lmk2, k=1, picked_points=flow).squeeze().round().long()
+                lmk2_w = lmk2 - flow_lmk2
+                for ix in range(len(id1)):
                     from tools.visualization import plot_landmarks
                     if not os.path.exists(f'./images/landmarks/{id1[ix]}_fixed.png'):
                         fig, axes = plot_landmarks(fixed[ix,0], lmk1[ix], save_path=f'./images/landmarks/{id1[ix]}_fixed.png')
-                    moving_dir = './images/landmarks/{}'.format(args.checkpoint.split('/')[-2])
+                    # find the dir that is direct child of logs
+                    moving_dir = './images/landmarks/{}'.format(exp_name)
                     # mkdir
                     if not os.path.exists(moving_dir):
                         os.mkdir(moving_dir)
                     # plot_landmarks(fixed[ix,0], lmk1_w[ix], fig=fig, ax=axes, color='yellow', save_path=f'{moving_dir}/{id1[ix]}_{id2[ix]}_fiexd.png')
-                    plot_landmarks(warped[-1][ix,0], lmk2[ix], save_path=f'{moving_dir}/{id1[ix]}_{id2[ix]}_warped.png',size=0)
+                    # plot_landmarks(moving[ix,0], lmk2[ix], save_path=f'{moving_dir}/{id1[ix]}_{id2[ix]}_moving.png')
+                    plot_landmarks(warped[-1][ix,0], lmk1[ix], save_path=f'{moving_dir}/{id1[ix]}_{id2[ix]}_warped_lmk1.png', size=20, color='red')
+                    fig, _ = plot_landmarks(warped[-1][ix,0], lmk2_w[ix], save_path=f'{moving_dir}/{id1[ix]}_{id2[ix]}_warped.png', size=20)
+                    if "selected" in locals():
+                        # add title for fig
+                        fig.suptitle(f'{selected.nonzero().squeeze().tolist()}')
+                    # close all figs of plt
+                    plt.close('all')
 
         ### Debug use
         pairs = list(zip(id1, id2))
