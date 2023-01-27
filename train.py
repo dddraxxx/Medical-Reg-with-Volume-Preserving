@@ -8,7 +8,7 @@ import torch
 from torch.functional import F
 from networks.recursive_cascade_networks import RecursiveCascadeNetwork
 from torch.optim import Adam
-from torch.optim.lr_scheduler import StepLR
+from torch.optim.lr_scheduler import StepLR, LambdaLR
 from torch.utils.data import DataLoader
 from metrics.losses import det_loss, jacobian_det, masked_sim_loss, ortho_loss, reg_loss, dice_jaccard, sim_loss, surf_loss
 import datetime as datetime
@@ -32,13 +32,16 @@ parser.add_argument('--ctt', '--continue_training_this', type=str, default=None)
 parser.add_argument('--fixed_sample', type=int, default=100)
 parser.add_argument('-g', '--gpu', type=str, default='', help='GPU to use')
 parser.add_argument('-d', '--dataset', type=str, default='datasets/liver_cust.json', help='Specifies a data config')
+parser.add_argument('-ts', '--training_scheme', type=str, default='', help='Specifies a training scheme')
+parser.add_argument('-aug', '--augment', default=True, type=lambda x: x.lower() in ['true', '1', 't', 'y', 'yes'], help='Augment data')
 parser.add_argument('--lr', type=float, default=1e-4)
+parser.add_argument('--lr_scheduler', default = 'step', type=str, help='lr scheduler', choices=['linear', 'step', 'cosine'])
 parser.add_argument('--debug', action='store_true', help="run the script without saving files")
 parser.add_argument('--name', type=str, default='')
 parser.add_argument('--ortho', type=float, default=0.1, help="use ortho loss")
 parser.add_argument('--det', type=float, default=0.1, help="use det loss")
 parser.add_argument('--reg', type=float, default=1, help="use reg loss")
-parser.add_argument('--keep_size', type=float, default=0, help="use keep-size loss")
+parser.add_argument('-ks', '--keep_size', type=float, default=0, help="use keep-size loss")
 parser.add_argument('--size_type', choices=['smooth', 'organ', 'constant'], default='organ')
 parser.add_argument('-m', '--masked', choices=['soft', 'seg', 'hard'], default='',
      help="mask the tumor part when calculating similarity loss")
@@ -46,6 +49,11 @@ parser.add_argument('-mn', '--masked_neighbor', type=int, default=10, help="for 
 parser.add_argument('--stage1_rev', type=bool, default=False, help="whether to use reverse flow in stage 1")
 parser.add_argument('-inv', '--invert_loss', action='store_true', help="invertibility loss")
 parser.add_argument('--surf_loss', default=0, type=float, help='Surface loss weight')
+parser.add_argument('-ic', '--in_channel', default=2, type=int, help='Input channel number')
+parser.add_argument('-w_ksv', '--w_ks_voxel', default=1, type=float, help='Weight for voxel method in ks loss')
+parser.add_argument('--ks_norm', default='voxel', choices=['image', 'voxel'])
+parser.set_defaults(in_channel=3 if parser.parse_args().masked else 2)
+
 
 args = parser.parse_args()
 if args.gpu:
@@ -93,6 +101,12 @@ def main():
             log_dir = args.ctt
             ckp_dir = log_dir+'/model_wts/'
             writer = SummaryWriter(log_dir=log_dir)
+        # record args
+        with open(log_dir+'/args.txt', 'a') as f:
+            from pprint import pprint
+            pprint(args.__dict__, f)
+    if args.debug:
+        torch.autograd.set_detect_anomaly(True)
 
     # read config
     with open(args.dataset, 'r') as f:
@@ -101,7 +115,7 @@ def main():
         image_type = cfg.get('image_type', None)
         segmentation_class_value=cfg.get('segmentation_class_value', {'unknown':1})
 
-    in_channels = 2 if not args.masked else 3
+    in_channels = args.in_channel
     model = RecursiveCascadeNetwork(n_cascades=args.n_cascades, im_size=image_size, base_network=args.base_network, cr_aff=True, in_channels=in_channels).cuda()
     if args.masked == 'soft' or args.masked == 'hard':
         print('Building stage 1 model')
@@ -132,11 +146,15 @@ def main():
     trainable_params += list(mmodel.reconstruction.parameters())
 
     lr = args.lr
-    optim = Adam(trainable_params, lr=args.lr)
-    scheduler = StepLR(optimizer=optim, step_size=10, gamma=0.96)
+    optim = Adam(trainable_params, lr=lr)
+    if args.lr_scheduler == 'step':
+        scheduler = StepLR(optimizer=optim, step_size=10, gamma=0.96)
+    elif args.lr_scheduler == 'linear':
+        min_lr = 1e-6
+        scheduler = LambdaLR(optimizer=optim, lr_lambda=lambda epoch: min_lr + (lr - min_lr) * (1 - epoch / args.epochs), last_epoch= start_epoch-1)
     print('Train', Split.TRAIN)
     print('Val', Split.VALID)
-    train_dataset = Data(args.dataset, rounds=args.round*args.batch_size, scheme=Split.TRAIN)
+    train_dataset = Data(args.dataset, rounds=args.round*args.batch_size, scheme=args.training_scheme or Split.TRAIN)
     val_dataset = Data(args.dataset, scheme=Split.VALID)
 
     num_worker = min(8, args.batch_size)
@@ -175,16 +193,19 @@ def main():
 
             # do some augmentation
             seg1 = data['segmentation1'].cuda()
-            moving, seg2 = model.augment(moving, data['segmentation2'].cuda())
+            if args.augment:
+                moving, seg2 = model.augment(moving, data['segmentation2'].cuda())
+            else:
+                seg2 = data['segmentation2'].cuda()
             if args.invert_loss:
                 fixed, moving = torch.cat([fixed, moving], dim=0), torch.cat([moving, fixed], dim=0)
                 seg1, seg2 = torch.cat([seg1, seg2], dim=0), torch.cat([seg2, seg1], dim=0)
-            if args.masked:
+            if args.in_channel==3:
                 moving_ = torch.cat([moving, seg2.float()], dim=1)
             else:
                 moving_ = moving
             warped_, flows, agg_flows, affine_params = model(fixed, moving_, return_affine=True)
-            warped = [i[:, :-1] for i in warped_] if args.masked else warped_
+            warped = [i[:, :-1] for i in warped_] if args.in_channel>2 else warped_
 
             # affine loss
             ortho_factor, det_factor = args.ortho, args.det
@@ -197,8 +218,10 @@ def main():
                 w_seg2, warped_tseg = w_seg[:len(w_seg)//2], w_seg[len(w_seg)//2:]>0.5
             # add log scalar tumor/ratio
             if (seg2>1.5).sum().item() > 0:
-                log_scalars['tumor_change'] = (warped_tseg).sum().item() / (seg2 > 1.5).sum().item()
-
+                # log_scalars['tumor_change'] = (warped_tseg).sum().item() / (seg2 > 1.5).sum().item()
+                t_c = (warped_tseg.sum(dim=(1,2,3,4)).float() / (seg2 > 1.5).sum(dim=(1,2,3,4)).float())
+                t_c = t_c[t_c.isnan()==False]
+                log_scalars['tumor_change'] = torch.where(t_c>1, t_c, 1/t_c).mean().item() 
             # sim and reg loss
             if not args.masked:
                 sim = sim_loss(fixed, warped[-1])
@@ -258,12 +281,36 @@ def main():
                 if args.size_type=='constant': ratio = 1
                 elif args.size_type=='organ': ratio = (seg1>.5).view(bs,-1).sum(1)/(seg2>.5).view(bs, -1).sum(1); ratio=ratio.view(-1,1,1,1)
                 kmask = warped_tseg
-                det_flow = (jacobian_det(agg_flows[-1], return_det=True).abs()/ratio).clamp(min=1/3, max=3)
-                kmask = F.interpolate(kmask.float(), size=det_flow.shape[-3:], mode='trilinear', align_corners=False) > 0.5
-                det_flow = det_flow[kmask[:,0]]
-                k_sz = torch.where(det_flow>1, det_flow, 1/det_flow).mean() * args.keep_size
-                if torch.isnan(k_sz): k_sz = sim.new_zeros(1)
-            else:
+                k_sz = 0
+                ### single voxel ratio
+                if args.w_ks_voxel>0:
+                    det_flow = (jacobian_det(agg_flows[-1], return_det=True).abs()/ratio).clamp(min=1/3, max=3)
+                    kmask_rs = F.interpolate(kmask.float(), size=det_flow.shape[-3:], mode='trilinear', align_corners=False) > 0.5
+                    if args.ks_norm=='voxel':
+                        det_flow = det_flow[kmask_rs[:,0]]
+                        k_sz_voxel = torch.where(det_flow>1, det_flow, 1/det_flow).mean()
+                    elif args.ks_norm=='image':
+                        # normalize loss for every image
+                        k_sz_voxel = (torch.where(det_flow>1, det_flow, 1/det_flow)*(kmask_rs[:,0])).sum(dim=(-1,-2,-3))
+                        nonzero_idx = k_sz_voxel.nonzero()
+                        k_sz_voxel = k_sz_voxel[nonzero_idx]/kmask_rs[:,0][nonzero_idx].sum(dim=(-1,-2,-3))
+                        k_sz_voxel = k_sz_voxel.mean()
+                    else: raise NotImplementedError
+                    k_sz = k_sz + args.w_ks_voxel*k_sz_voxel
+                    log_scalars['k_sz_voxel'] = k_sz_voxel
+                ### whole volume ratio
+                if args.w_ks_voxel<1:
+                    det_flow = jacobian_det(agg_flows[-1], return_det=True).abs()
+                    kmask_rs = F.interpolate(kmask.float(), size=det_flow.shape[-3:], mode='trilinear', align_corners=False) > 0.5
+                    det_flow[~kmask_rs[:,0]]=0
+                    k_sz_volume = (det_flow.sum(dim=(-1,-2,-3))/kmask_rs[:,0].sum(dim=(-1,-2,-3))/ratio.squeeze()).clamp(1/3, 3)
+                    k_sz_volume = torch.where(k_sz_volume>1, k_sz_volume, 1/k_sz_volume)
+                    k_sz_volume = k_sz_volume[k_sz_volume.nonzero()].mean()
+                    k_sz = k_sz + (1-args.w_ks_voxel)*k_sz_volume
+                    log_scalars['k_sz_volume'] = k_sz_volume
+                k_sz = k_sz  * args.keep_size
+                if torch.isnan(k_sz): k_sz = sim.new_zeros(1) # k_sz is all nan
+            else:   
                 k_sz = sim.new_zeros(1)
             
             if args.invert_loss:
@@ -282,6 +329,7 @@ def main():
 
             loss = sim+reg+det+ort+k_sz+ivt+surf
             if loss.isnan().any():
+                import pdb; pdb.set_trace()
                 loss = 0
             loss.backward()
             optim.step()
@@ -335,7 +383,7 @@ def main():
                 if not args.debug:
                     for k in loss_dict:
                         writer.add_scalar('train/'+k, loss_dict[k], epoch * len(train_loader) + iteration)
-                    writer.add_scalar('train/lr', lr, epoch * len(train_loader) + iteration)
+                    writer.add_scalar('train/lr', scheduler.get_last_lr()[0], epoch * len(train_loader) + iteration)
                     for k in log_scalars:
                         writer.add_scalar('train/'+k, log_scalars[k], epoch * len(train_loader) + iteration)
 
