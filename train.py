@@ -3,6 +3,8 @@ import json
 import argparse
 import os
 import time
+
+import numpy as np
 from tools.utils import load_model_from_dir, load_model
 import torch
 from torch.functional import F
@@ -45,7 +47,8 @@ parser.add_argument('-ks', '--keep_size', type=float, default=0, help="use keep-
 parser.add_argument('--size_type', choices=['smooth', 'organ', 'constant'], default='organ')
 parser.add_argument('-m', '--masked', choices=['soft', 'seg', 'hard'], default='',
      help="mask the tumor part when calculating similarity loss")
-parser.add_argument('-mn', '--masked_neighbor', type=int, default=10, help="for masked neibor calculation")
+parser.add_argument('-msk_thr', '--mask_threshold', type=float, default=2, help="volume changing threshold for mask")
+parser.add_argument('-mn', '--masked_neighbor', type=int, default=5, help="for masked neibor calculation")
 parser.add_argument('--stage1_rev', type=bool, default=False, help="whether to use reverse flow in stage 1")
 parser.add_argument('-inv', '--invert_loss', action='store_true', help="invertibility loss")
 parser.add_argument('--surf_loss', default=0, type=float, help='Surface loss weight')
@@ -118,12 +121,11 @@ def main():
     in_channels = args.in_channel
     model = RecursiveCascadeNetwork(n_cascades=args.n_cascades, im_size=image_size, base_network=args.base_network, cr_aff=True, in_channels=in_channels).cuda()
     if args.masked == 'soft' or args.masked == 'hard':
-        print('Building stage 1 model')
-        state_path = '/home/hynx/regis/recursive-cascaded-networks/logs/Dec06_012136_normal-vtn/model_wts'
-        stage1_model = RecursiveCascadeNetwork(n_cascades=args.n_cascades, im_size=image_size, base_network='VTN', cr_aff=True).cuda().eval()
-        # state_path = '/home/hynx/regis/recursive-cascaded-networks/logs/Nov26_030214_normal-vxm/model_wts'
-        # stage1_model = RecursiveCascadeNetwork(n_cascades=args.n_cascades, im_size=image_size, base_network='VXM', cr_aff=False).cuda().eval()
+        state_path = '/home/hynx/regis/recursive-cascaded-networks/logs/Jan08_180325_normal-vtn'
+        print('Building stage 1 model from', state_path)
+        stage1_model = RecursiveCascadeNetwork(n_cascades=args.n_cascades, im_size=image_size, base_network='VTN', cr_aff=True)
         load_model_from_dir(state_path, stage1_model)
+        stage1_model = stage1_model.cuda().eval()
     # add checkpoint loading
     start_epoch = 0
     if args.checkpoint or args.ctt:
@@ -173,8 +175,15 @@ def main():
     val_loss_log = []
     max_seg = max(segmentation_class_value.values())
 
+    if args.masked in ['soft', 'hard']:
+        template = list(train_dataset.subset['slits-temp'].values())[0]
+        template_image, template_seg = template['volume'], template['segmentation']
+        template_image = torch.tensor(np.array(template_image).astype(np.float32)).unsqueeze(0).unsqueeze(0).cuda()/255.0
+        template_seg = torch.tensor(np.array(template_seg).astype(np.float32)).unsqueeze(0).unsqueeze(0).cuda()
+
     # use cudnn.benchmark
     torch.backends.cudnn.benchmark = True
+    torch.backends.cudnn.enabled = True
     for epoch in range(start_epoch, args.epochs):
         print(f"-----Epoch {epoch+1} / {args.epochs}-----")
         train_epoch_loss = 0
@@ -193,10 +202,9 @@ def main():
 
             # do some augmentation
             seg1 = data['segmentation1'].cuda()
+            seg2 = data['segmentation2'].cuda()
             if args.augment:
-                moving, seg2 = model.augment(moving, data['segmentation2'].cuda())
-            else:
-                seg2 = data['segmentation2'].cuda()
+                moving, seg2 = model.augment(moving, seg2)
             if args.invert_loss:
                 fixed, moving = torch.cat([fixed, moving], dim=0), torch.cat([moving, fixed], dim=0)
                 seg1, seg2 = torch.cat([seg1, seg2], dim=0), torch.cat([seg2, seg1], dim=0)
@@ -218,7 +226,6 @@ def main():
                 w_seg2, warped_tseg = w_seg[:len(w_seg)//2], w_seg[len(w_seg)//2:]>0.5
             # add log scalar tumor/ratio
             if (seg2>1.5).sum().item() > 0:
-                # log_scalars['tumor_change'] = (warped_tseg).sum().item() / (seg2 > 1.5).sum().item()
                 t_c = (warped_tseg.sum(dim=(1,2,3,4)).float() / (seg2 > 1.5).sum(dim=(1,2,3,4)).float())
                 t_c = t_c[t_c.isnan()==False]
                 log_scalars['tumor_change'] = torch.where(t_c>1, t_c, 1/t_c).mean().item() 
@@ -228,48 +235,62 @@ def main():
             else:
                 mask = warped_tseg | (seg1==2)
                 assert mask.requires_grad == False
-                if args.masked == 'seg': #or (args.masked=='hard' and epoch<=args.epochs*0.5):
+                if args.masked == 'seg':
                     sim = masked_sim_loss(fixed, warped[-1], mask)
+                    mask_fixing = seg1
+                    mask_moving = seg2
                 elif args.masked == 'soft' or args.masked =='hard':
-                    # get soft mask
                     with torch.no_grad():
-                        w_s1, _, s1_agg_flows = stage1_model(fixed, moving, return_neg=args.stage1_rev)
-                    # todo: s1_agg_flows should be reversed
-                    # s1_flow = s1_agg_flows[-1].detach()
-                    # use normal flow to calculate flows
-                    s1_flow = s1_agg_flows[-1].detach()
-                    flow_det = jacobian_det(s1_flow, return_det=True)
-                    flow_det = flow_det.unsqueeze(1).abs()
+                        stage1_inputs = torch.cat([fixed, moving], dim=0)
+                        template_input = template_image.expand_as(stage1_inputs)
+                        # achieve organ mask via regristration
+                        _, _, s1_agg_flows = stage1_model(stage1_inputs, template_input, return_neg=args.stage1_rev)
+                        s1_flow = s1_agg_flows[-1]
+                        w_template_seg = stage1_model.reconstruction(template_seg.expand_as(template_input), s1_flow)
+                        mask_fixing = w_template_seg[:fixed.shape[0]]
+                        # s1_flow_fixing = s1_flow[:fixed.shape[0]]
+                        mask_moving = w_template_seg[fixed.shape[0]:]
+                        s1_flow_moving = s1_flow[fixed.shape[0]:]
+                        # find shrinking tumors
+                        w_moving, _, rs1_agg_flows = stage1_model(template_input[:fixed.shape[0]], moving, return_neg=args.stage1_rev)
+                        rs1_flow = rs1_agg_flows[-1]
+                        # find the area ranked by dissimilarity
+                        def dissimilarity(x, y):
+                            x_mean = x-x.mean(dim=(1,2,3,4), keepdim=True)
+                            y_mean = y-y.mean(dim=(1,2,3,4), keepdim=True)
+                            correlation = x_mean*y_mean
+                            return -correlation
+                        dissimilarity_moving = dissimilarity(template_input[:fixed.shape[0]], w_moving)
+
+                    # check whether s1_agg_flows should be reversed
+                    flow_det_moving = jacobian_det(rs1_flow, return_det=True)
+                    flow_det_moving = flow_det_moving.unsqueeze(1).abs()
                     # get n x n neighbors 
                     n = args.masked_neighbor
-                    # w_n = torch.where(flow_det>1, flow_det, 1/flow_det)
-                    if args.stage1_rev: w_n = 1/flow_det
-                    else: w_n = flow_det
-                    sizes = F.avg_pool3d(w_n, kernel_size=n, stride=1, padding=n//2)
-                    sizes = F.interpolate(sizes, size=fixed.shape[-3:], mode='trilinear', align_corners=False) \
-                        if sizes.shape[-3:]!=fixed.shape[-3:] else sizes
-                    w_n = sizes
+                    if args.stage1_rev: flow_ratio = 1/flow_det_moving
+                    else: flow_ratio = flow_det_moving
+                    flow_ratio = flow_ratio.clamp(1/4,4)
+                    sizes = F.interpolate(flow_ratio, size=fixed.shape[-3:], mode='trilinear', align_corners=False) \
+                        if flow_ratio.shape[-3:]!=fixed.shape[-3:] else flow_ratio
+                    flow_ratio = F.avg_pool3d(sizes, kernel_size=n, stride=1, padding=n//2)
+                    flow_ratio[~(mask_moving>0.5)]=0
                     # sizes = sizes/sizes.mean(dim=(2,3,4), keepdim=True)
-                    log_scalars['size_quantile_0.9'] = torch.quantile(sizes, .9)
-                    log_scalars['size_quantile_0.1'] = torch.quantile(sizes, .1)
+                    log_scalars['zooming_q0.9'] = torch.quantile(sizes, .9)
+                    log_scalars['zooming_q0.1'] = torch.quantile(sizes, .1)
                     if args.masked=='soft':
                         # normalize soft mask
-                        soft_mask = w_n/w_n.mean(dim=(2,3,4), keepdim=True)
+                        soft_mask = flow_ratio/flow_ratio.mean(dim=(2,3,4), keepdim=True)
                         # soft mask * sim loss per pixel
                         sim = masked_sim_loss(fixed, warped[-1], mask, soft_mask)
                         # sim = masked_sim_loss(fixed, warped[-1], soft_mask.new_zeros(soft_mask.shape, dtype=bool), soft_mask)
-                    elif args.masked=='hard':# and epoch>args.epochs*0.5:
-                        # margin value should be set as argument
-                        # w_n[...,:n] = w_n[...,-n:] = w_n[...,:n,:] = w_n[...,-n:,:] = w_n[...,:n,:,:] = w_n[...,-n:,:,:] = 0
-                        thres = 2 # thres = torch.quantile(w_n, .9)
-                        hard_mask = w_n > thres
-                        if args.stage1_rev:
-                            with torch.no_grad():
-                                warped_hard_mask = mmodel.reconstruction(hard_mask.float(), agg_flows[-1]) > 0.5
-                        else: warped_hard_mask = hard_mask
-                        merged_mask = (warped_hard_mask)
-                        assert merged_mask.requires_grad == False
-                        sim = masked_sim_loss(fixed, warped[-1], merged_mask)
+                    elif args.masked=='hard':
+                         # thres = torch.quantile(w_n, .9)
+                        thres = args.mask_threshold
+                        hard_mask = flow_ratio > thres
+                        with torch.no_grad():
+                            warped_hard_mask = mmodel.reconstruction(hard_mask.float(), agg_flows[-1]) > 0.5
+                        assert warped_hard_mask.requires_grad == False
+                        sim = masked_sim_loss(fixed, warped[-1], warped_hard_mask)
                         warped_tseg = warped_hard_mask
 
             reg = reg_loss(flows[1:]) * args.reg
@@ -279,7 +300,7 @@ def main():
                 #     nonaffine_flow = mmodel.reconstruction(nonaffine_flow, flow) + flow
                 bs = agg_flows[-1].shape[0]
                 if args.size_type=='constant': ratio = 1
-                elif args.size_type=='organ': ratio = (seg1>.5).view(bs,-1).sum(1)/(seg2>.5).view(bs, -1).sum(1); ratio=ratio.view(-1,1,1,1)
+                elif args.size_type=='organ': ratio = (mask_fixing>.5).view(bs,-1).sum(1)/(mask_moving>.5).view(bs, -1).sum(1); ratio=ratio.view(-1,1,1,1)
                 kmask = warped_tseg
                 k_sz = 0
                 ### single voxel ratio
@@ -387,7 +408,7 @@ def main():
                     for k in log_scalars:
                         writer.add_scalar('train/'+k, log_scalars[k], epoch * len(train_loader) + iteration)
 
-                if iteration%args.val_steps==0 or args.debug:
+                if iteration%args.val_steps==0 :#or args.debug:
                     print(f">>>>> Validation <<<<<")
                     val_epoch_loss = 0
                     dice_loss = {k:0 for k in segmentation_class_value.keys()}
