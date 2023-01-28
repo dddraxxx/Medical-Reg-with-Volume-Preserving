@@ -3,7 +3,7 @@ from .base_networks import *
 from .layers import SpatialTransformer
 
 class RecursiveCascadeNetwork(nn.Module):
-    def __init__(self, n_cascades, im_size=(512, 512), base_network='VTN', in_channels=2, cr_aff=False):
+    def __init__(self, n_cascades, im_size=(512, 512), base_network='VTN', in_channels=2, cr_aff=True):
         super(RecursiveCascadeNetwork, self).__init__()
 
         device = torch.device("cuda" if torch.cuda.is_available() else "cpu")

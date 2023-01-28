@@ -400,7 +400,7 @@ class VTNAffineStem(nn.Module):
         elif len(shape) == 3:
             flow = flow[..., [2, 1, 0]]
             flow = flow.permute(0, 4, 1, 2, 3)
-        flow = flow*flow.new_tensor(shape).view(-1, *[1 for i in shape])/2
+        flow = flow*flow.new_tensor(shape).view(-1, *[1 for _ in shape])/2
         return flow
     def wr_flow(self, theta, size):
         flow = F.affine_grid(theta, size, align_corners=False)  # batch x 512 x 512 x 2

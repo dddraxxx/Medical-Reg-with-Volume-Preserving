@@ -59,7 +59,7 @@ def visualize_3d(data, width=5, inter_dst=5, save_name=None, print_=False, color
     data: (S, H, W) or (N, C, H, W)"""
     data =tt(data)
     if norm:
-        data = norm(data)
+        data = normalize(data)
     img = data.float()
     # st = torch.tensor([76, 212, 226])
     # end = st+128
@@ -81,7 +81,7 @@ def visualize_3d(data, width=5, inter_dst=5, save_name=None, print_=False, color
     else:
         return img_f
 
-def norm(data, dim=3, ct=False):
+def normalize(data, dim=3, ct=False):
     data = tt(data)
     if ct:
         data1 = data.flatten(start_dim=-3)
@@ -115,7 +115,7 @@ def draw_seg_on_vol(data, lb, if_norm=True, alpha=0.3, colors=["green", "red", "
     lb = tt(lb).float().reshape(-1, *lb.shape[-3:])
     data =tt(data).float().reshape(1, *data.shape[-3:])
     if if_norm:
-        data = norm(data, 3)
+        data = normalize(data, 3)
     data = (data*255).cpu().to(torch.uint8)
     res = []
     for d, l in zip(data.transpose(0,1), lb.cpu().transpose(0,1)):

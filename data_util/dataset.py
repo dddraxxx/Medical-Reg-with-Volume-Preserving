@@ -94,6 +94,9 @@ class Data(Dataset):
         self.data_pairs = [item for sublist in self.data_pairs for item in sublist]
         self.rounds = rounds or len(self.data_pairs)
 
+    def get_instance(self, id):
+        return self.files[id]
+    
     def get_pairs(self, data, ordered=True):
         pairs = []
         for i, d1 in enumerate(data):
