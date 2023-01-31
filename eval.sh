@@ -20,6 +20,12 @@ function check_m(){
         m="-m"
     fi
 }
+function single_eval(){
+    msk_weight=$1
+    check_m
+    shift
+    python eval.py -d datasets/liver_cust.json -g 2 -c $msk_weight $m $@
+}
 function eval() {
     msk_weight=$1
     check_m
@@ -51,9 +57,10 @@ function eval_vl(){
 }
 
 # eval $msk_weight
-eval_lmr $msk_weight 10
+# eval_lmr $msk_weight 10
 msk_weight=/home/hynx/regis/recursive-cascaded-networks/logs/Jan08_180325_normal-vtn
-eval_lmr $msk_weight 10
+# eval_lmr $msk_weight 10
+single_eval $msk_weight -v lits-p -lm -sd 0
 #regex: find dir with name ".*ks.\d.*"
 # for msk_weight in $(find ./logs  -maxdepth 1 -type d -regex ".*ks\.[1-9]-.*"); do
 #     eval_lmr $msk_weight -1

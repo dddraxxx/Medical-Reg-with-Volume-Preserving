@@ -36,7 +36,7 @@ parser.add_argument('-re','--reverse', action='store_true', help='If save revers
 parser.add_argument('-tl','--test_large', action='store_true', help='If test on data with small tumor')
 parser.add_argument('-tb','--test_boundary', action='store_true', help='If test on data with tumor close to organ boundary')
 parser.add_argument('-lm', '--lmd', action='store_true', help='If test landmark locations')
-parser.add_argument('--lmk_json', type=str, default='/home/hynx/regis/recursive-cascaded-networks/datasets/lits17_landmark.json', help='landmark for eval files')
+parser.add_argument('--lmk_json', type=str, default='/home/hynx/regis/recursive-cascaded-networks/landmark_json/lits17_landmark.json', help='landmark for eval files')
 parser.add_argument('-m', '--masked', action='store_true', help='If model need masks')
 parser.add_argument('-lm_r', '--lmk_radius', type=int, default=10, help='affected landmark within radius')
 parser.add_argument('-vl', '--visual_lmk', action='store_true', help='If visualize landmark')
@@ -112,6 +112,7 @@ def main():
             if not bound_idx.any(): continue
             else: data=pick_data(bound_idx, data)
         seg1, seg2 = data['segmentation1'], data['segmentation2']
+        # seg1, seg2 = (seg1>0.5).float(), (seg2>0.5).float()
                 
         fixed, moving = data['voxel1'], data['voxel2']
         id1, id2 = data['id1'], data['id2']
@@ -338,9 +339,9 @@ def main():
     # save result
     with open(output_fname, 'w') as fo:
         # list result keys (each one takes space 8)
-        print('{:<12}'.format('id1'), '{:<12}'.format('id2'), '{:<12}'.format('avg_dice'), *['{:<12}'.format(k) for k in metric_keys], file=fo)
+        print('{:<18}'.format('id1'), '{:<18}'.format('id2'), '{:<12}'.format('avg_dice'), *['{:<12}'.format(k) for k in metric_keys], file=fo)
         for i in range(len(results['dices'])):
-            print('{:<12}'.format(results['id1'][i]), '{:<12}'.format(results['id2'][i]), '{:<12.4f}'.format(np.mean(results['dices'][i])), 
+            print('{:<18}'.format(results['id1'][i]), '{:<18}'.format(results['id2'][i]), '{:<12.4f}'.format(np.mean(results['dices'][i])), 
                 *['{:<12.4f}'.format(results[k][i]) for k in metric_keys], file=fo)
             # print(results['id1'][i], results['id2'][i], np.mean(results['dices'][i]), *[results[k][i] for k in metric_keys], file=fo)
         # write summary
