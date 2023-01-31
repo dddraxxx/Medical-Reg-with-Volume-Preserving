@@ -93,23 +93,23 @@ class ResizeTransform(nn.Module):
         # don't do anything if resize is 1
         return x
 
-import faiss
-res = faiss.StandardGpuResources()  
-def faiss_knn(reference_embeddings, test_embeddings, k):
-    """
-    Finds the k elements in reference_embeddings that are closest to each
-    element of test_embeddings.
-    Args:
-        reference_embeddings: numpy array of size (num_samples, dimensionality).
-        test_embeddings: numpy array of size (num_samples2, dimensionality).
-        k: int, number of nearest neighbors to find
-    """
-    d = reference_embeddings.shape[1]
-    index = faiss.IndexFlatL2(d)
-    gpu_index_flat = faiss.index_cpu_to_gpu(res, 0, index)
-    gpu_index_flat.add(reference_embeddings) #
-    _, indices = index.search(test_embeddings, k)
-    return indices
+# import faiss
+# res = faiss.StandardGpuResources()  
+# def faiss_knn(reference_embeddings, test_embeddings, k):
+#     """
+#     Finds the k elements in reference_embeddings that are closest to each
+#     element of test_embeddings.
+#     Args:
+#         reference_embeddings: numpy array of size (num_samples, dimensionality).
+#         test_embeddings: numpy array of size (num_samples2, dimensionality).
+#         k: int, number of nearest neighbors to find
+#     """
+#     d = reference_embeddings.shape[1]
+#     index = faiss.IndexFlatL2(d)
+#     gpu_index_flat = faiss.index_cpu_to_gpu(res, 0, index)
+#     gpu_index_flat.add(reference_embeddings) #
+#     _, indices = index.search(test_embeddings, k)
+#     return indices
 
 import frnn
 class RevSpatialTransformer(nn.Module):

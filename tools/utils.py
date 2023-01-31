@@ -110,9 +110,19 @@ class PyTMinMaxScalerVectorized(object):
 
 def draw_seg_on_vol(data, lb, if_norm=True, alpha=0.3, colors=["green", "red", "blue"]):
     """
-    data: (1,) S, H, W
-    label: (N,) S, H, W (binary value or bool)"""
-    lb = tt(lb).float().reshape(-1, *lb.shape[-3:])
+    Plot a 3D volume with binary segmentation masks overlaid on it.
+
+    Parameters:
+        data (torch.Tensor): The input 3D volume, shape: ((1,) S, H, W). \
+        lb (torch.Tensor): Binary masks representing segmentations, shape: ((M,) S, H, W).
+        if_norm (bool): Whether to normalize the input volume. Default is True.
+        alpha (float): Transparency of the overlay masks. Default is 0.3.
+        colors (list): List of colors to use for overlay masks. Default is ["green", "red", "blue"].
+        
+    Returns:
+        torch.Tensor: Normalized output volume with overlay masks, shape: (S, 3, H, W).
+    """
+    lb = tt(lb).reshape(-1, *lb.shape[-3:])
     data =tt(data).float().reshape(1, *data.shape[-3:])
     if if_norm:
         data = normalize(data, 3)

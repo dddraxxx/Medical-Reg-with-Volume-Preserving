@@ -3,6 +3,7 @@ from matplotlib.collections import LineCollection
 from mpl_toolkits.mplot3d.art3d import Line3DCollection
 from mpl_toolkits.mplot3d import Axes3D
 import numpy as np
+import torch
 
 def identify_axes(ax_dict, fontsize=48):
     kw = dict(ha="center", va="center", fontsize=fontsize, color="darkgrey")
@@ -50,9 +51,30 @@ def plot_grid(ax, flow, factor=10):
     ax.add_collection(LineCollection(segs2, color='black', linewidths=0.8))
     ax.autoscale()
 
+def plt_close():
+    plt.close()
+
 def plot_landmarks(img, landmarks, fig=None, ax=None, save_path=None, every_n = 3, color='red',size=10):
-    img = img.cpu().numpy()
-    landmarks = landmarks.cpu().numpy()
+    """
+    Plot landmarks on the input image.
+
+    Parameters:
+    - img (torch.tensor): Input image tensor.
+    - landmarks (torch.tensor): Input landmarks tensor.
+    - fig (matplotlib.figure.Figure, optional): Figure object to be used for plotting. Default is None.
+    - ax (matplotlib.axes._subplots.AxesSubplot, optional): Axes object to be used for plotting. Default is None.
+    - save_path (str, optional): Path to save the plot. Default is None.
+    - every_n (int, optional): Plot every n-th slice of the input image. Default is 3.
+    - color (str, optional): Color of the landmarks. Default is 'red'.
+    - size (int, optional): Size of the landmarks in the plot. Default is 10.
+
+    Returns:
+    - fig (matplotlib.figure.Figure): Figure object used for plotting.
+    - axes (matplotlib.axes._subplots.AxesSubplot): Axes object used for plotting.
+    """
+    if isinstance(img, torch.Tensor):
+        img = img.cpu().numpy()
+        landmarks = landmarks.cpu().numpy()
     if fig is None:
         fig = plt.figure(figsize=(10, 10))
     if ax is None:

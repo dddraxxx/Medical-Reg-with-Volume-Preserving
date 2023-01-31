@@ -18,9 +18,9 @@ from monai.transforms import (
     Orientation,
 )
 from pathlib import Path as pa
-import nibabel as nib
 
 from tqdm import tqdm
+from utils import combo_imgs, draw_seg_on_vol
 
 # read npz file
 def get_npz(path):
@@ -146,19 +146,22 @@ def visualize_3d(img, save_name, label=None, **kwargs):
     plt.close()
 
 def visual_h5(h5_path):
-    dir = pa('images') / pa(h5_path).stem
+    dir_path = pa('images') / pa(h5_path).stem
+    # get full path
+    dir_path = dir_path.resolve()
     # mkdir
-    dir.mkdir(parents=True, exist_ok=True)
+    dir_path.mkdir(parents=True, exist_ok=True)
     with h5py.File(h5_path, 'r') as f:
         bar = tqdm(f)
         for id in bar:
-                img = np.array(f[id]['volume'])
-                visualize_3d(img, save_name = dir / f'{id}_img.jpg', figsize=(10, 10))
-                seg = np.array(f[id]['segmentation'])
-                visualize_3d(seg, save_name = dir / f'{id}_seg.jpg', figsize=(10, 10))
-                # overlay img and seg
-                visualize_3d(img[None ], save_name = dir / f'{id}_img_seg.jpg', label=seg[None], figsize=(10, 10))
-                bar.set_description(f'visualizing {id} as' + f' {dir / f"{id}_img.jpg"}')
+            img = np.array(f[id]['volume'])
+            seg = np.array(f[id]['segmentation'])
+            # visualize_3d(img, save_name = dir / f'{id}_img.jpg', figsize=(10, 10))
+            # visualize_3d(seg, save_name = dir / f'{id}_seg.jpg', figsize=(10, 10))
+            # # overlay img and seg
+            # visualize_3d(img[None ], save_name = dir / f'{id}_img_seg.jpg', label=seg[None], figsize=(10, 10))
+            combo_imgs(img, seg, draw_seg_on_vol(img, seg)).save(dir_path / f'{id}_img.jpg')
+            bar.set_description(f'visualizing {id} as' + f' {dir_path / f"{id}_img.jpg"}')
 
 # visualize original ct data
 def visual_nii(id, path = '/mnt/sdc/lits/train'):
@@ -343,8 +346,11 @@ def store_dicom_h5(h5_path, path = '/mnt/sdc/qhd/nbia/Duke-Breast-Cancer-MRI'):
             f[group].create_dataset('segmentation', data=np.zeros((128,128,128)), dtype='uint8')
 
 if __name__=='__main__':
-    store_segs('/home/hynx/regis/Recursive-Cascaded-Networks/datasets/lits.h5')#, selected=np.s_[128:129])
-    visual_h5('/home/hynx/regis/Recursive-Cascaded-Networks/datasets/lits.h5')
+    # store_segs('/home/hynx/regis/Recursive-Cascaded-Networks/datasets/lits.h5')#, selected=np.s_[128:129])
+    # visual_h5('/home/hynx/regis/Recursive-Cascaded-Networks/datasets/lits.h5')
+    # visual_h5('/home/hynx/regis/Recursive-Cascaded-Networks/datasets/lspig_val.h5')
+    visual_h5('/home/hynx/regis/Recursive-Cascaded-Networks/datasets/lits_paste.h5')
+
     # data, meta = read_nii(path='/mnt/sdc/lits/train/volume-51.nii', original_meta=True)
     # seg = read_nii(path='/mnt/sdc/lits/train/segmentation-51.nii', with_meta=meta)
     # # print(meta)

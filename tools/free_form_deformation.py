@@ -12,7 +12,7 @@ class quick_FFD(FFD):
         :rtype: callable
         """
         def gpu_T_mapping(points):
-            cp.cuda.Device(3).use()
+            cp.cuda.Device(0).use()
             (n_rows, n_cols) = points.shape
             (dim_n_mu, dim_m_mu, dim_t_mu) = self.array_mu_x.shape
 
