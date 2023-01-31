@@ -1,4 +1,4 @@
-# %%
+# %% import functions
 import logging
 import os
 import random
@@ -31,10 +31,23 @@ def cal_centroid(seg2):
     # show_img(img2[:,:, int(c_z)])
 
 # part 1: simulate pressure of the tumor
-# find a location to paste tumour
 def find_loc_to_paste_tumor(seg1, kseg2, bbox):
-    '''
-    1: organ, 2:tumor'''
+    """
+    This function finds a location in `seg1` to paste a tumor region represented by `kseg2` within a bounding box `bbox`. 
+    The value '1' in `seg1` represents an organ and the value '2' in `kseg2` represents a tumor. 
+    The function returns the bounding box for the location where the tumor can be pasted on `seg1`.
+    
+    Parameters:
+    seg1 (np.ndarray): A 3D array of shape (S, H, W) representing the organ segmentation.
+    kseg2 (np.ndarray): A 3D array of shape (S, H, W) representing the tumor segmentation.
+    bbox (np.ndarray): A 3D bounding box of shape (2, 3) which defines the size of the region to be pasted on `seg1`.
+    
+    Returns:
+    np.ndarray: A bounding box of shape (2, 3) representing the location where the tumor can be pasted on `seg1`.
+    
+    Raises:
+    ValueError: If it's not possible to find a location to paste the tumor on `seg1`.
+    """
     box_length = bbox[1] - bbox[0]
     area =  seg1.shape - box_length
     # how to pick a left up corner?
@@ -55,6 +68,7 @@ def find_loc_to_paste_tumor(seg1, kseg2, bbox):
             if (s1&s2 == s2).all():
                 return np.array([pt, pt+box_length])
     raise ValueError("cannot find a location to paste tumor")
+
 
 def find_largest_component(seg, label=2):
     from monai.transforms import KeepLargestConnectedComponent
@@ -334,6 +348,7 @@ def check_foldover(flow):
     """
 
 
+
 #%%
 if __name__=='__main__':
     # use h5
@@ -344,10 +359,16 @@ if __name__=='__main__':
     # tumor sorted idx
     no_tumor_idxs = [87,  89, 105, 106,  32,  34,  91, 114, 115,  38,  41,  47, 119]
     sorted_tumor_idx = ([83, 127, 25, 12, 5, 112,  15, 125,  59,  67,  20,  65,  95,  24,  92,  58,  73,  54,   3,  63,  14,  42,  86, 121,  55, 111, 107,  69,  61,  62,  57, 126,  81,  85, 120,  43,  66,  11,  99,  68,  45, 75,  50,  53, 0, 2,  19,  77,  60,  18, 102,  31,  30,  35,  10,  96,   8,   9,  29, 7,   1,  37,  79,   6,  21,  49,  13,  17,  78,  94,  72,  23,  26, 109,  22, 103,  52, 113,  36,  82, 122,  48, 110,  74, 124,  70, 128,  40,  46,  27, 101,  80,  93,  88,  90, 44, 123,  28,  39,  84,  64, 104,  16,  76,  51,  97,  71,  98,  56, 116, 118, 117, 129, 33, 100, 108, 130, 4])
+    #%% find tumor size
+    tumor_size = []
+    for i in sorted_tumor_idx:
+        tumor_size.append(np.sum(dct[f'{i}']['segmentation'][...]>1.5))
+    # print(list(enumerate(tumor_size)))
+    #%% select ids
     # no tumor instance
     id1s = ['115']
     # with tumor (equally sample 10)
-    id2s = [str(i) for i in sorted_tumor_idx[30::13]]
+    id2s = [str(i) for i in sorted_tumor_idx[50::3]]
     #%% below tumor too large
     # id2s = ['129', "33", "100", "108", "130", "4"]
     write_h5 = True
@@ -361,7 +382,7 @@ if __name__=='__main__':
     (pa(img_dir)/'deform').mkdir(exist_ok=True)
     #%%
     for id1 in id1s[:]:
-        for id2 in id2s[:]:
+        for id2 in id2s[:5]:
             print('\ndeforming organ {} for tumor {}'.format(id1, id2))
             img1 = dct[id1]['volume'][...]
             img2 = dct[id2]['volume'][...]
@@ -422,25 +443,22 @@ if __name__=='__main__':
                 ffd.array_mu_z[seg_pts==0] = 0
                 globals().update(locals())
                 return ffd
-            if False:
+            if True:
                 p_ffd = presure_ffd(bbox, paste_seg2, fct_low=0.5, fct_range=0, l=16, order=3.5, sample_num=1000)
-                # p_ffd = quick_FFD([8,8,8])
-                # p_ffd.box_origin = bbox[0]
-                # p_ffd.box_length = bbox[1]-bbox[0]
                 wpts = ffd_mesh(p_ffd, img1.shape)
                 disp = calc_disp(wpts, axis=-1)
                 print('max displacement', disp.max())
-                #%% visualize pressure to the image
-                #%matplotlib widget
-                plt.figure()
-                ax = plt.gca()
-                def func(ax, i):
-                    d = ax.contour(disp[i], levels=3)
-                    ax.clabel(d, inline=True, fontsize=3)
-                    ax.imshow(paste_seg2[i], alpha=0.6)
-                plt_img3d_axes(img1, func)
-                plt.savefig(img_dir+'img/{}-{}_disp.png'.format(id1, id2))
-                plt.show()
+                # visualize pressure to the image
+                def vis_pressure():
+                    plt.figure()
+                    ax = plt.gca()
+                    def func(ax, i):
+                        d = ax.contour(disp[i], levels=3)
+                        ax.clabel(d, inline=True, fontsize=3)
+                        ax.imshow(paste_seg2[i], alpha=0.6)
+                    plt_img3d_axes(img1, func)
+                    plt.savefig(img_dir+'img/{}-{}_disp.png'.format(id1, id2))
+                    plt.show()
                 res, res_seg = do_ffd(p_ffd, img1, seg1, reverse=True)
             else:
                 res = img1.copy()
@@ -455,10 +473,11 @@ if __name__=='__main__':
                        ).save(pa(img_dir)/'deform/{}-{}_stage1.png'.format(id1, id2))
             logging.info('stage1 done and picture saved to {}'.format(pa(img_dir)/'deform/{}-{}_stage1.png'.format(id1, id2)))
             #%% stage 2
-            def stage2(res1, res_seg, p_ffd=lambda x:x, r_ffd=None):
+            def stage2(res1, res_seg, p_ffd=lambda x:x, r_ffd=None,):
                 if r_ffd is None:
                     r_ffd = random_ffd(l=3) # l=5 the default settings
                 # plt_ffd(ffd)
+                # check if the ffd needs to be reversed
                 res2, res2_seg = do_ffd(r_ffd, res1, res_seg, reverse=True)
                 mesh_pts = np.mgrid[0:128, 0:128, 0:128].reshape(3, -1).T.astype(float)
                 # below the composition of flow
