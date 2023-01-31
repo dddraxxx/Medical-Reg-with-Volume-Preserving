@@ -16,6 +16,12 @@ class Hdf5Reader:
         except Exception:
             print('{} not found!'.format(path))
             self.file = None
+    
+    # keys method
+    def keys(self):
+        if self.file is None:
+            return []
+        return list(self.file.keys())
 
     def __getitem__(self, key):
         data = {'id': key}
@@ -57,7 +63,13 @@ class Data(Dataset):
         for k, v in config['subsets'].items():
             self.subset[k] = {}
             for entry in v:
-                self.subset[k][entry] = self.files[entry]
+                if entry.split('/')[-1] == '*':
+                    entries = self.files.files[entry[:entry.rfind('/')]].keys()
+                    for e in entries: 
+                        ee = entry.replace('*',e)
+                        self.subset[k][ee] = self.files[ee]
+                else:
+                    self.subset[k][entry] = self.files[entry]
 
         self.paired = paired
 
