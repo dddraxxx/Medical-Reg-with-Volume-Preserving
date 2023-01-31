@@ -1,4 +1,7 @@
 # %%
+import logging
+import os
+import random
 import matplotlib
 from matplotlib import widgets
 import matplotlib.pyplot as plt
@@ -13,7 +16,8 @@ from free_form_deformation import quick_FFD
 
 import sys
 sys.path.append('../')
-from utils import visualize_3d, tt, show_img, combine_pil_img, plt_img3d_axes
+from utils import visualize_3d, tt, show_img, combine_pil_img, plt_img3d_axes, combo_imgs, draw_seg_on_vol
+from visualization import plot_landmarks, plt_close
 
 # calculate centroid of seg2
 def cal_centroid(seg2):
@@ -59,6 +63,17 @@ def find_largest_component(seg, label=2):
     return kseg
 
 def ext_bbox(f_bbox, ratio=.5):
+    """
+    Extend the bounding box by a random amount within the given ratio.
+
+    Parameters:
+    f_bbox (numpy array): Initial bounding box with shape (2, 3).
+    ratio (float): Ratio of the maximum amount to extend the bounding box.
+
+    Returns:
+    numpy array: The extended bounding box with shape (2, 3).
+
+    """
     box_length = f_bbox[1]-f_bbox[0]
     ext_l = np.random.rand(3)*(box_length*ratio)
     print('box length', box_length, '\nextended length', ext_l)
@@ -66,7 +81,15 @@ def ext_bbox(f_bbox, ratio=.5):
     return bbox
 
 def find_bbox(seg1, seg2, total_bbox=True):
-    '''total_bbox: the bbox for ffd'''
+    '''
+    Param:
+        total_bbox: if use the whole image as ffd bbox
+    Return:
+        kseg2: largest component of seg2
+        o_bbox: original bbox of seg2
+        f_bbox: bbox of pasting location in seg1
+        bbox: bbox for ffd
+    '''
     from monai.transforms.utils import generate_spatial_bounding_box
     kseg2 = find_largest_component(seg2)
     bbox = generate_spatial_bounding_box(kseg2, lambda x:x==2)
@@ -81,13 +104,13 @@ def find_bbox(seg1, seg2, total_bbox=True):
     return kseg2, o_bbox, f_bbox, bbox
 
 def draw_3dbox(res, l, r, val=255):
-    res = res.copy()   
+    res = res.copy()
     res[l[0]:r[0], l[1], l[2]:r[2]] = val
     res[l[0]:r[0], r[1], l[2]:r[2]] = val
     res[l[0]:r[0], l[1]:r[1], l[2]] = val
     res[l[0]:r[0], l[1]:r[1], r[2]] = val
     return res
-    
+
 from scipy.ndimage import map_coordinates
 def presure_ffd(bbox, paste_seg2, fct_low=0.5, fct_range=0.4, l=8, order=1):
     global seg_pts, prs_matrix, dst_matrix, dsp_matrix
@@ -162,6 +185,21 @@ def flow_reverse(flow, rev_points=None):
     return rev_flow.reshape(*flow.shape)
 
 def do_ffd(ffd, img, seg=None, order=1, reverse=False):
+    """
+    Perform Free Form Deformation on the input image.
+    
+    Parameters:
+    - ffd (ndarray): the control points of the deformation grid
+    - img (ndarray): the input image
+    - seg (ndarray, optional): the segmentation mask of the input image
+    - order (int, optional): the order of the interpolation. Default is 1
+    - reverse (bool, optional): whether to reverse the deformation. Default is False
+    
+    Returns:
+    - res (ndarray): the deformed image
+    - reseg (ndarray, optional): the deformed segmentation mask if seg is provided
+    
+    """
     if reverse:
         # get flow
         flow, mesh = ffd_flow(ffd, img.shape, True)
@@ -175,11 +213,21 @@ def do_ffd(ffd, img, seg=None, order=1, reverse=False):
     # globals().update(locals())
     if seg is not None:
         reseg = map_coordinates(seg, nr_mesh.transpose(-1,0,1,2), order=0, mode='constant', cval=0)
-        return res, reseg
+        return res, np.round(reseg).astype(np.uint8)
     return res
 
-##%% paste tumor
 def roll_pad(data, shift, padding=0):
+    """
+    Roll and pad a numpy ndarray along multiple axes with specified padding value.
+
+    Parameters:
+    data (ndarray): The input data to be rolled and padded.
+    shift (list or tuple): The number of places by which elements are shifted along each axis.
+    padding (int or float, optional): The value to fill the newly created padding elements. Default is 0.
+
+    Returns:
+    ndarray: The input data after being rolled and padded along multiple axes.
+    """
     res = np.roll(data, shift, axis=(0,1,2))
     off_index = lambda x: np.s_[int(x):] if x<0 else np.s_[:int(x)]
     offset = [off_index(i) for i in shift]
@@ -193,12 +241,13 @@ from scipy.ndimage import distance_transform_edt
 # signed distance map
 def sdm(kseg2, feather_len):
     # global dist_pts, weight_kseg2, dst_to_weight
-    dist_pts = distance_transform_edt(kseg2!=2) - distance_transform_edt(kseg2==2)
+    dist_pts = distance_transform_edt(kseg2 != 2) - distance_transform_edt(
+        kseg2 == 2)
     weight_kseg2 = np.zeros_like(kseg2, dtype=np.float32)
-    dst_to_weight = lambda x, l: 0.5-x/2/l
-    idx = abs(dist_pts)<feather_len
+    dst_to_weight = lambda x, l: 0.5 - x / 2 / l
+    idx = abs(dist_pts) < feather_len
     weight_kseg2[idx] = dst_to_weight(dist_pts[idx], feather_len)
-    weight_kseg2[dist_pts<=-feather_len] = 1
+    weight_kseg2[dist_pts <= -feather_len] = 1
     # feathering area should be inside organ
     inside_organ = kseg2>0
     weight_kseg2[~inside_organ] = 0
@@ -217,16 +266,23 @@ def dm(kseg2, feather_len):
     return weight_kseg2
 
 def direct_paste(res, img2, kseg2, f_bbox, o_bbox):
-    weight_kseg2 = kseg2.copy()
+    """
+    Paste tumor part of img2 to res at f_bbox.
+
+    Parameters:
+    res: the image to be pasted
+    img2: the image to paste
+    kseg2: the segmentation of img2
+    f_bbox: the bbox of the tumor in res
+    o_bbox: the bbox of the tumor in img2
+    
+    Returns:
+    res1: the image after pasting
+    """
+    weight_kseg2 = (kseg2>1.5).copy()
     weight_seg1 = roll_pad(1-weight_kseg2, f_bbox[0]-o_bbox[0], padding=1)
     roll_img2 = roll_pad(img2, f_bbox[0]-o_bbox[0], padding=0)
     res1 = res*weight_seg1 + roll_img2*(1-weight_seg1)
-    # res1 = res.copy()
-    # res1[paste_seg2==2] = img2[kseg2==2]
-    # direct paste tumor with borders
-    # res1 = res.copy()
-    # roll_dist = roll_pad(dist_pts, f_bbox[0]-o_bbox[0], padding=feather_len+1)
-    # res1[roll_dist<feather_len]=img2[dist_pts<feather_len]
     return res1
 
 def feathering_paste(feather_len, res, img2, kseg2, f_bbox, o_bbox):
@@ -242,6 +298,7 @@ def calc_disp(points, axis=-1):
 
 ## %% part 2 of the deform: random deformation
 def random_ffd(l=5):
+    """Generate a random FFD with l control points in each direction"""
     ffd = quick_FFD([l, l, l])
     ffd.box_length = np.full(3, 128-1)
     ffd.box_origin = np.zeros(3)
@@ -253,15 +310,28 @@ def random_ffd(l=5):
     return ffd
 
 def ffd_params(ffd):
+    """Encode ffd parameters to a vector"""
     return np.array([*ffd.n_control_points, *ffd.box_origin, *ffd.box_length, *ffd.array_mu_x.flatten(), *ffd.array_mu_y.flatten(), *ffd.array_mu_z.flatten()])
 
 def get_paste_seg(seg1, kseg2, f_bbox, o_bbox):
+    """
+    seg1: original seg
+    kseg2: seg2 after deform"""
     paste_seg2 = np.zeros_like(kseg2)
     paste_seg2[f_bbox[0][0]:f_bbox[1][0], f_bbox[0][1]:f_bbox[1][1], f_bbox[0][2]:f_bbox[1][2]] = kseg2[o_bbox[0][0]:o_bbox[1][0], o_bbox[0][1]:o_bbox[1][1], o_bbox[0][2]:o_bbox[1][2]]
     paste_seg2 = np.where(paste_seg2==2, 2, seg1)
     return paste_seg2
 
-# TODO: Add foldover check
+# TODO: Add foldover check for the flow field
+def check_foldover(flow):
+    """ Check if the flow field has foldover 
+    
+    Parameters:
+    flow: np.array, HxWx3
+    
+    Returns:
+    foldover: bool, True if has foldover
+    """
 
 
 #%%
@@ -272,46 +342,43 @@ if __name__=='__main__':
     dct = h5py.File(fname, 'r')
 
     # tumor sorted idx
-    # [ 87  89 105 106  32  34  91 114 115  38  41  47 119 ||  83 127  25  12   5
-    #  112  15 125  59  67  20  65  95  24  92  58  73  54   3  63  14  42  86
-    #  121  55 111 107  69  61  62  57 126  81  85 120  43  66  11  99  68  45
-    #   75  50  53   0   2  19  77  60  18 102  31  30  35  10  96   8   9  29
-    #    7   1  37  79   6  21  49  13  17  78  94  72  23  26 109  22 103  52
-    #  113  36  82 122  48 110  74 124  70 128  40  46  27 101  80  93  88  90
-    #   44 123  28  39  84  64 104  16  76  51  97  71  98  56 116 118 117 129
-    #   33 100 108 130   4]
-    # no tumor: ['87',  '89', '105', '106',  '32',  '34',  '91', '114', '115',  '38',  '41',  '47', '119',]
+    no_tumor_idxs = [87,  89, 105, 106,  32,  34,  91, 114, 115,  38,  41,  47, 119]
+    sorted_tumor_idx = ([83, 127, 25, 12, 5, 112,  15, 125,  59,  67,  20,  65,  95,  24,  92,  58,  73,  54,   3,  63,  14,  42,  86, 121,  55, 111, 107,  69,  61,  62,  57, 126,  81,  85, 120,  43,  66,  11,  99,  68,  45, 75,  50,  53, 0, 2,  19,  77,  60,  18, 102,  31,  30,  35,  10,  96,   8,   9,  29, 7,   1,  37,  79,   6,  21,  49,  13,  17,  78,  94,  72,  23,  26, 109,  22, 103,  52, 113,  36,  82, 122,  48, 110,  74, 124,  70, 128,  40,  46,  27, 101,  80,  93,  88,  90, 44, 123,  28,  39,  84,  64, 104,  16,  76,  51,  97,  71,  98,  56, 116, 118, 117, 129, 33, 100, 108, 130, 4])
     # no tumor instance
-    id1s = ['106','119','38']
-    # with tumor
-    id2s = ['104',  '51', '118', '129']
-    # below tumor too large 
+    id1s = ['115']
+    # with tumor (equally sample 10)
+    id2s = [str(i) for i in sorted_tumor_idx[30::13]]
+    #%% below tumor too large
     # id2s = ['129', "33", "100", "108", "130", "4"]
     write_h5 = True
     if write_h5:
-        h5_writer = h5py.File('/home/hynx/regis/Recursive-Cascaded-Networks/datasets/lits_deform_fL.h5', 'w')
-    img_dir = '/home/hynx/regis/FFD_imgs/'
+        # h5_writer = h5py.File('/home/hynx/regis/Recursive-Cascaded-Networks/datasets/lits_deform.h5', 'w')
+        h5_writer = h5py.File('/home/hynx/regis/Recursive-Cascaded-Networks/datasets/lits_paste.h5', 'w')
+        print('writing to h5', h5_writer.filename)
+    img_dir = '/home/hynx/regis/FFD_imgs/paste'
     pa(img_dir).mkdir(exist_ok=True)
-    pa(img_dir+'img').mkdir(exist_ok=True)
-    pa(img_dir+'deform').mkdir(exist_ok=True)
+    (pa(img_dir)/'img').mkdir(exist_ok=True)
+    (pa(img_dir)/'deform').mkdir(exist_ok=True)
     #%%
-    for id1 in id1s[:3]:
-        for id2 in id2s[:2]:
+    for id1 in id1s[:]:
+        for id2 in id2s[:]:
             print('\ndeforming organ {} for tumor {}'.format(id1, id2))
             img1 = dct[id1]['volume'][...]
             img2 = dct[id2]['volume'][...]
             seg1 = dct[id1]['segmentation'][...]
             seg2 = dct[id2]['segmentation'][...]
+            print('{} has tumor size: {}'.format(id2, np.sum(seg2==2)))
 
-            combine_pil_img(show_img(seg1), show_img(seg2), show_img(find_largest_component(seg2)[0])).save(img_dir+'img/{}-{}_seg.png'.format(id1, id2))
-            combine_pil_img(show_img(img1), show_img(img2)).save(img_dir+'img/{}-{}_img.png'.format(id1, id2))
+            combine_pil_img(show_img(seg1), show_img(seg2), show_img(find_largest_component(seg2)[0])).save(pa(img_dir)/'img/{}-{}_seg.png'.format(id1, id2))
+            combine_pil_img(show_img(img1), show_img(img2)).save(pa(img_dir)/'img/{}-{}_img.png'.format(id1, id2))
             #@%% stage 1
             try:
                 kseg2, o_bbox, f_bbox, bbox = find_bbox(seg1, seg2, True)
             except ValueError as e:
                 print(e)
                 continue
-            #%%
+            paste_seg2 = get_paste_seg(seg1, kseg2, f_bbox, o_bbox)
+            #%% do presure ffd
             def presure_ffd(bbox, paste_seg2, fct_low=0.5, fct_range=0.4, l=8, order=1, sample_num=1000):
                 ffd = quick_FFD([l, l, l])
                 ffd.box_origin = bbox[0]
@@ -323,22 +390,17 @@ if __name__=='__main__':
                 # calculate the pressure
                 # sample tumor points
                 tumor_pts = np.mgrid[:paste_seg2.shape[0], :paste_seg2.shape[1], :paste_seg2.shape[2]].transpose(1,2,3,0)[paste_seg2==2]
-                # tumor_pts = tumor_pts[np.random.choice(tumor_pts.shape[0], sample_num, replace=False)]
-                tumor_pts = tumor_pts[::tumor_pts.shape[0]//sample_num]
-                # tumor_pts = control_pts[seg_pts==2]
+                tumor_pts = tumor_pts[np.random.choice(tumor_pts.shape[0], sample_num, replace=False)] if tumor_pts.shape[0]>sample_num else tumor_pts
                 # calculate the distance between control points
                 dsp_matrix = control_pts.reshape(-1, 3) - tumor_pts.reshape(-1, 3)[:, None]
                 dsp_matrix /= ffd.box_length
                 # diagonal entries are the same point, and no need to calculate the distance
                 dst_matrix = (dsp_matrix**2).sum(axis=-1)
                 dst_matrix[dst_matrix==0] = 1
-                # pressure = factor * (norm_vector/distance^order),
                 prs_matrix = dsp_matrix/(1e-5+dst_matrix[...,None]**(0.5+order/2))
                 prs_pts = (prs_matrix*(seg_pts!=2).reshape(1,-1,1)).sum(axis=0)/sample_num
                 dxyz = prs_pts.reshape(*control_pts.shape).transpose(-1,0,1,2)
                 # normalize the pressure by points' distance to boundary
-                # fct = np.random.rand()*fct_range+fct_low
-                # print('factor', fct)
                 dist_to_bnd, bnd_ind = distance_transform_edt(seg_pts>0, sampling=1/(l-1), return_indices=True)
                 dist_to_tu = distance_transform_edt(seg_pts<2, sampling=1/(l-1))
                 disp_prs = np.linalg.norm(prs_pts, axis=-1)
@@ -360,61 +422,109 @@ if __name__=='__main__':
                 ffd.array_mu_z[seg_pts==0] = 0
                 globals().update(locals())
                 return ffd
-            paste_seg2 = get_paste_seg(seg1, kseg2, f_bbox, o_bbox)
-            p_ffd = presure_ffd(bbox, paste_seg2, fct_low=0.5, fct_range=0, l=16, order=3.5, sample_num=1000)
-            # %%
-            wpts = ffd_mesh(p_ffd, img1.shape)
-            disp = calc_disp(wpts, axis=-1)
-            print('max displacement', disp.max())
-            #%% visualize pressure to the image
-            # %matplotlib widget
-            # plt.figure()
-            # ax = plt.gca()
-            def func(ax, i):
-                d = ax.contour(disp[i], levels=3)
-                ax.clabel(d, inline=True, fontsize=3)
-                ax.imshow(paste_seg2[i], alpha=0.6)
-            plt_img3d_axes(img1, func)
-            plt.savefig(img_dir+'img/{}-{}_disp.png'.format(id1, id2))
-            # plt.show()
-            #%%
-            res, res_seg = do_ffd(p_ffd, img1, seg1, reverse=True)
-            #%%
-            # paste tumor
-            # res1 = direct_paste()
-            feather_len = 5
-            res1 = feathering_paste(feather_len, res, img2, kseg2, f_bbox, o_bbox)
+            if False:
+                p_ffd = presure_ffd(bbox, paste_seg2, fct_low=0.5, fct_range=0, l=16, order=3.5, sample_num=1000)
+                # p_ffd = quick_FFD([8,8,8])
+                # p_ffd.box_origin = bbox[0]
+                # p_ffd.box_length = bbox[1]-bbox[0]
+                wpts = ffd_mesh(p_ffd, img1.shape)
+                disp = calc_disp(wpts, axis=-1)
+                print('max displacement', disp.max())
+                #%% visualize pressure to the image
+                #%matplotlib widget
+                plt.figure()
+                ax = plt.gca()
+                def func(ax, i):
+                    d = ax.contour(disp[i], levels=3)
+                    ax.clabel(d, inline=True, fontsize=3)
+                    ax.imshow(paste_seg2[i], alpha=0.6)
+                plt_img3d_axes(img1, func)
+                plt.savefig(img_dir+'img/{}-{}_disp.png'.format(id1, id2))
+                plt.show()
+                res, res_seg = do_ffd(p_ffd, img1, seg1, reverse=True)
+            else:
+                res = img1.copy()
+                res_seg = paste_seg2.copy()
+            #%% paste tumor
+            res1 = direct_paste(res, img2, kseg2, f_bbox, o_bbox)
+            # feather_len = 5
+            # res1 = feathering_paste(feather_len, res, img2, kseg2, f_bbox, o_bbox)
             res_seg[paste_seg2==2]=2
+            # save img in stage1
+            combo_imgs(res1, res_seg, draw_seg_on_vol(res1, res_seg)
+                       ).save(pa(img_dir)/'deform/{}-{}_stage1.png'.format(id1, id2))
+            logging.info('stage1 done and picture saved to {}'.format(pa(img_dir)/'deform/{}-{}_stage1.png'.format(id1, id2)))
             #%% stage 2
-            r_ffd = random_ffd() # l=5 the default settings
-            # plt_ffd(ffd)
-            res2, res2_seg = do_ffd(r_ffd, res1, res_seg, reverse=True)
-            #%%
-            mesh_pts = np.mgrid[0:128, 0:128, 0:128].reshape(3, -1).T.astype(float)
-            # below the composition of flow
-            ffd_pts = p_ffd(r_ffd(mesh_pts))
-            ffd_pts = ffd_pts.reshape(128, 128, 128, 3)
-            res_gt = map_coordinates(res2, ffd_pts.transpose(-1,0,1,2), order=1, mode='nearest', cval=0)
-            # combo_imgs(res_gt, img1, res2)
-            #%%
-            im = combine_pil_img(show_img(img1), show_img(np.clip(res2,0,255)), show_img(res2_seg))
-            im.save(img_dir+f'./deform/{id1}_{id2}.png')
+            def stage2(res1, res_seg, p_ffd=lambda x:x, r_ffd=None):
+                if r_ffd is None:
+                    r_ffd = random_ffd(l=3) # l=5 the default settings
+                # plt_ffd(ffd)
+                res2, res2_seg = do_ffd(r_ffd, res1, res_seg, reverse=True)
+                mesh_pts = np.mgrid[0:128, 0:128, 0:128].reshape(3, -1).T.astype(float)
+                # below the composition of flow
+                ffd_pts = p_ffd(r_ffd(mesh_pts))
+                ffd_pts = ffd_pts.reshape(128, 128, 128, 3)
+                # res_gt = map_coordinates(res2, ffd_pts.transpose(-1,0,1,2), order=1, mode='nearest', cval=0)
+                return res2, res2_seg, ffd_pts, r_ffd
+            res2, res2_seg, ffd_pts, r_ffd = stage2(res1, res_seg)
+            nt_res2, nt_res2_seg, nt_ffd_pts, nt_r_ffd = stage2(img1, seg1, r_ffd=r_ffd)
+            
+            # res2, res2_seg = res1, res_seg
+            res2, nt_res2 = np.clip(res2,0,255), np.clip(nt_res2,0,255)
+            combo_imgs((res2), res2_seg, draw_seg_on_vol((res2), res2_seg)
+                       ).save(pa(img_dir)/'deform/{}-{}_stage2.png'.format(id1, id2))
+            combo_imgs((nt_res2), nt_res2_seg, draw_seg_on_vol((nt_res2), nt_res2_seg)
+                       ).save(pa(img_dir)/'deform/{}-{}_stage2_nt.png'.format(id1, id2)) 
+            logging.info('stage2 done and picture saved to {}'.format(pa(img_dir)/'deform/{}-{}_stage2.png'.format(id1, id2)))
 
-            # save img1, res2, ffd_gt, and segmentation of res2 to h5 file
+            #%% save img1, res2, ffd_gt, and segmentation of res2 to h5 file
             # create group if not exist
+            def write_h5_(h5_writer, id1, img1, seg1, id2=None, res2=None, res2_seg=None, ffd_pts=None, r_ffd=None, deformed=True, points=None):
+                if not deformed:
+                    if id1 not in h5_writer:
+                        h5_writer.create_group(id1)
+                        h5_writer[id1].create_dataset('volume', data=(img1), dtype='uint8')
+                        h5_writer[id1].create_dataset('segmentation', data=seg1, dtype='uint8')
+                        if points is not None:
+                            h5_writer[id1].create_dataset('point', data=points, dtype='uint8')
+                else:
+                    assert all([id1, img1, seg1, id2, res2, res2_seg, ffd_pts, r_ffd])
+                    if id1 not in h5_writer:
+                        h5_writer.create_group(id1)
+                        h5_writer[id1].create_dataset('volume', data=(img1), dtype='uint8')
+                        h5_writer[id1].create_dataset('segmentation', data=seg1, dtype='uint8')
+                    if 'id2' not in h5_writer[id1]:
+                        h5_writer[id1].create_group('id2')
+                    h5_writer[id1]['id2'].create_group(id2)
+                    h5_writer[id1]['id2'][id2].create_dataset('volume', data=(res2), dtype='uint8')
+                    h5_writer[id1]['id2'][id2].create_dataset('segmentation', data=res2_seg, dtype='uint8')
+                    h5_writer[id1]['id2'][id2].create_dataset('ffd_gt', data=ffd_pts.astype(np.float32))
+                    # save ffd in h5
+                    ffd_obj = np.concatenate([ffd_params(p_ffd), ffd_params(r_ffd)])
+                    h5_writer[id1]['id2'][id2].create_dataset('ffd', data=ffd_obj)
+
+            #%% also preserve the landmark points if any
+            deformed_points = None
+            import json
+            lmk = json.load(open('/home/hynx/regis/recursive-cascaded-networks/landmark_json/lits17_landmark.json', 'r'))
+            if id1 in lmk:
+                points = np.array(lmk[id1])
+                deformed_points = np.full(points.shape, -1)
+                for i in range(points.shape[0]):
+                    if points[i,0] == -1:
+                        continue
+                    deformed_points[i] = ffd_pts[points[i,0], points[i,1], points[i,2]]
+                plot_landmarks(res1, deformed_points, save_path=pa(img_dir)/'deform/{}-{}_points.png'.format(id1, id2))
+                plt_close()
+                
             if write_h5:
-                if id1 not in h5_writer:
-                    h5_writer.create_group(id1)
-                    h5_writer[id1].create_dataset('volume', data=np.clip(img1,0,255).astype(np.uint8))
-                    h5_writer[id1].create_dataset('segmentation', data=seg1.astype(np.uint8))
-                if 'id2' not in h5_writer[id1]:
-                    h5_writer[id1].create_group('id2')
-                h5_writer[id1]['id2'].create_group(id2)
-                h5_writer[id1]['id2'][id2].create_dataset('volume', data=np.clip(res2,0,255).astype(np.uint8))
-                h5_writer[id1]['id2'][id2].create_dataset('segmentation', data=res2_seg.astype(np.uint8))
-                h5_writer[id1]['id2'][id2].create_dataset('ffd_gt', data=ffd_pts.astype(np.float32))
-                # save ffd in h5
-                ffd_obj = np.concatenate([ffd_params(p_ffd), ffd_params(r_ffd)])
-                h5_writer[id1]['id2'][id2].create_dataset('ffd', data=ffd_obj)
+                # write_h5_(h5_writer, id1, img1, seg1, id2, res2, res2_seg, ffd_pts, r_ffd, deformed=True)
+                write_h5_(h5_writer, '{}'.format(id1), img1, seg1, deformed=False, points=points)
+                write_h5_(h5_writer, 'p_{}_{}'.format(id1, id2), res2, res2_seg, deformed=False, points=deformed_points)
+                write_h5_(h5_writer, 'nt_{}_{}'.format(id1, id2), nt_res2, nt_res2_seg, deformed=False, points=deformed_points)
+
+                
+        # plot_landmarks(img1, points, save_path=pa(img_dir)/'deform/{}_points.png'.format(id1), color='r')
+        # plt_close()
 
     if write_h5: h5_writer.close()
