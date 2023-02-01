@@ -418,10 +418,12 @@ def main():
                     for k in log_scalars:
                         writer.add_scalar('train/'+k, log_scalars[k], epoch * len(train_loader) + iteration)
 
-                if iteration%args.val_steps==0 :#or args.debug:
+                if iteration%args.val_steps==0 or args.debug:
                     print(f">>>>> Validation <<<<<")
                     val_epoch_loss = 0
                     dice_loss = {k:0 for k in segmentation_class_value.keys()}
+                    to_ratios = 0
+                    total_to = 0
                     model.eval()
                     tb_imgs = {}
                     for itern, data in enumerate(val_loader):
@@ -448,6 +450,16 @@ def main():
                                 w_seg2 = mmodel.reconstruction(seg2.float(), agg_flows[-1].float()) > 0.5
                                 dice, jac = dice_jaccard(seg1, w_seg2)
                                 dice_loss[k] += dice.mean().item()
+                            # add metrics for to_ratio
+                            w_seg2 = mmodel.reconstruction(seg2.float(), agg_flows[-1].float())
+                            to_ratio = (torch.sum(w_seg2>1.5, dim=(2, 3, 4)) / torch.sum(seg1>1.5, dim=(2, 3, 4))) /(torch.sum(w_seg2>0.5, dim=(2, 3, 4)) / torch.sum(seg1>0.5, dim=(2, 3, 4)))
+                            to_ratio = torch.where(to_ratio>1, 1/to_ratio, to_ratio)
+                            to_ratio = to_ratio.nanmean().item()
+                            # if not nan 
+                            if not np.isnan(to_ratio):
+                                to_ratios += to_ratio
+                                total_to += 1
+
                     tb_imgs['img1'] = fixed
                     tb_imgs['img2'] = moving
                     tb_imgs['warped'] = warped[-1]
@@ -464,8 +476,11 @@ def main():
                         mean_dc = v / len(val_loader)
                         mean_dice_loss[k] = mean_dc
                         print(f'Mean dice loss {k}: {mean_dc}')
+                    mean_to_ratio = to_ratios / total_to
+                    print(f'Mean to_ratio: {mean_to_ratio}')
                     if not args.debug:
                         writer.add_scalar('val/loss', mean_val_loss, epoch * len(train_loader) + iteration)
+                        writer.add_scalar('val/to_ratio', mean_to_ratio, epoch * len(train_loader) + iteration)
                         for k in mean_dice_loss.keys():
                             writer.add_scalar(f'val/dice_{k}', mean_dice_loss[k], epoch * len(train_loader) + iteration)
                         # add img1, img2, seg1, seg2, warped, w_seg2
