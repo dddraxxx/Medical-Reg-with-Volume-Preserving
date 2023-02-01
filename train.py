@@ -118,14 +118,20 @@ def main():
         image_type = cfg.get('image_type', None)
         segmentation_class_value=cfg.get('segmentation_class_value', {'unknown':1})
 
+    print('Train', Split.TRAIN)
+    print('Val', Split.VALID)
+    train_dataset = Data(args.dataset, rounds=args.round*args.batch_size, scheme=args.training_scheme or Split.TRAIN)
+    val_dataset = Data(args.dataset, scheme=Split.VALID)
+
     in_channels = args.in_channel
-    model = RecursiveCascadeNetwork(n_cascades=args.n_cascades, im_size=image_size, base_network=args.base_network, cr_aff=True, in_channels=in_channels).cuda()
-    if args.masked == 'soft' or args.masked == 'hard':
-        state_path = '/home/hynx/regis/recursive-cascaded-networks/logs/Jan08_180325_normal-vtn'
-        print('Building stage 1 model from', state_path)
-        stage1_model = RecursiveCascadeNetwork(n_cascades=args.n_cascades, im_size=image_size, base_network='VTN', cr_aff=True)
-        load_model_from_dir(state_path, stage1_model)
-        stage1_model = stage1_model.cuda().eval()
+    model = RecursiveCascadeNetwork(n_cascades=args.n_cascades, im_size=image_size, base_network=args.base_network, cr_aff=True, in_channels=in_channels, compute_mask=None).cuda()
+    if args.masked in ['soft', 'hard']:
+        template = list(train_dataset.subset['slits-temp'].values())[0]
+        template_image, template_seg = template['volume'], template['segmentation']
+        template_image = torch.tensor(np.array(template_image).astype(np.float32)).unsqueeze(0).unsqueeze(0).cuda()/255.0
+        template_seg = torch.tensor(np.array(template_seg).astype(np.float32)).unsqueeze(0).unsqueeze(0).cuda()
+        stage1_model = model.build_preregister(template_image, template_seg).RCN.cuda()
+
     # add checkpoint loading
     start_epoch = 0
     if args.checkpoint or args.ctt:
@@ -154,10 +160,6 @@ def main():
     elif args.lr_scheduler == 'linear':
         min_lr = 1e-6
         scheduler = LambdaLR(optimizer=optim, lr_lambda=lambda epoch: min_lr + (lr - min_lr) * (1 - epoch / args.epochs), last_epoch= start_epoch-1)
-    print('Train', Split.TRAIN)
-    print('Val', Split.VALID)
-    train_dataset = Data(args.dataset, rounds=args.round*args.batch_size, scheme=args.training_scheme or Split.TRAIN)
-    val_dataset = Data(args.dataset, scheme=Split.VALID)
 
     num_worker = min(8, args.batch_size)
     if dist.is_initialized():
@@ -174,12 +176,6 @@ def main():
     reg_loss_log = []
     val_loss_log = []
     max_seg = max(segmentation_class_value.values())
-
-    if args.masked in ['soft', 'hard']:
-        template = list(train_dataset.subset['slits-temp'].values())[0]
-        template_image, template_seg = template['volume'], template['segmentation']
-        template_image = torch.tensor(np.array(template_image).astype(np.float32)).unsqueeze(0).unsqueeze(0).cuda()/255.0
-        template_seg = torch.tensor(np.array(template_seg).astype(np.float32)).unsqueeze(0).unsqueeze(0).cuda()
 
     # use cudnn.benchmark
     torch.backends.cudnn.benchmark = True
@@ -254,7 +250,7 @@ def main():
                     thres = args.mask_threshold
                     hard_mask = flow_ratio > thres
                     with torch.no_grad():
-                        warped_hard_mask = mmodel.reconstruction(hard_mask.float(), agg_flows[-1]) > 0.5
+                        warped_hard_mask = mmodel.reconstruction(hard_mask.float(), rs1_agg_flows[-1]) > 0.5
                     input_seg = hard_mask + mask_moving
             elif args.masked=='seg': input_seg = seg2.float()
             
@@ -422,8 +418,7 @@ def main():
                     print(f">>>>> Validation <<<<<")
                     val_epoch_loss = 0
                     dice_loss = {k:0 for k in segmentation_class_value.keys()}
-                    to_ratios = 0
-                    total_to = 0
+                    to_ratios, total_to = 0,0
                     model.eval()
                     tb_imgs = {}
                     for itern, data in enumerate(val_loader):
@@ -435,19 +430,22 @@ def main():
                             seg2 = data['segmentation2'].cuda()
                             fixed = fixed.cuda()
                             moving = moving.cuda()
-                            if args.masked:
+                            if args.masked=='seg':
                                 moving_ = torch.cat([moving, seg2], dim=1)
                             else:
                                 moving_ = moving
                             warped_, flows, agg_flows = mmodel(fixed, moving_)
                             warped = [i[:, :1] for i in warped_]
+                            if args.masked:
+                                w_seg2 = warped_[-1][:, 1:]
+                            else:
+                                w_seg2 = model.reconstruction(seg2.float().cuda(), agg_flows[-1].float())
                             sim, reg = sim_loss(fixed, warped[-1]), reg_loss(flows[1:])
                             loss = sim + reg
                             val_epoch_loss += loss.item()
                             for k,v in segmentation_class_value.items():
                                 seg1 = data['segmentation1'].cuda() > v-0.5
                                 seg2 = data['segmentation2'].cuda() > v-0.5
-                                w_seg2 = mmodel.reconstruction(seg2.float(), agg_flows[-1].float()) > 0.5
                                 dice, jac = dice_jaccard(seg1, w_seg2)
                                 dice_loss[k] += dice.mean().item()
                             # add metrics for to_ratio
@@ -476,7 +474,7 @@ def main():
                         mean_dc = v / len(val_loader)
                         mean_dice_loss[k] = mean_dc
                         print(f'Mean dice loss {k}: {mean_dc}')
-                    mean_to_ratio = to_ratios / total_to
+                    mean_to_ratio = total_to and to_ratios / total_to
                     print(f'Mean to_ratio: {mean_to_ratio}')
                     if not args.debug:
                         writer.add_scalar('val/loss', mean_val_loss, epoch * len(train_loader) + iteration)
