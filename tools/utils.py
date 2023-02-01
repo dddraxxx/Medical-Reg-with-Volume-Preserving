@@ -1,3 +1,4 @@
+from typing import Iterable
 import torch
 from torchvision.utils import make_grid, save_image, draw_segmentation_masks
 import numpy as np
@@ -50,6 +51,18 @@ def load_model_from_dir(checkpoint_dir, model):
 
 import frnn
 def get_nearest(ref, points, k, picked_points):
+    """
+    Find the k nearest picked points for each reference point in 'ref' using the set of points in 'points'.
+
+    Parameters:
+        ref (numpy.ndarray): A 3D numpy array of shape (N, 3, D) representing the reference points.
+        points (numpy.ndarray): A 3D numpy array of shape (M, 3, D) representing the set of points to search in.
+        k (int): The number of nearest picked points to find for each reference point.
+        picked_points (numpy.ndarray): A 2D numpy array of shape (P, 3, D) representing the picked points to gather for.
+
+    Returns:
+        nearest_points (numpy.ndarray): A 3D numpy array of shape (N, k, D) representing the k nearest picked points for each reference point.
+    """
     dists, idxs, nn, grid = frnn.frnn_grid_points(points, ref, K=k, r=20, return_nn=False)
     nearest_points = frnn.frnn_gather(picked_points, idxs, k)
     return nearest_points
@@ -175,12 +188,33 @@ def plt_img3d_show(imgs, cmap, intrv=5):
     plt.tight_layout()
     plt.show()
 
-def plt_img3d_axes(imgs, func, intrv=5, fig=None, figsize=(10, 10), **kwargs):
+def plt_img3d_axes(imgs, func, intrv=5, fig=None, figsize=(10, 10), picked=None, **kwargs):
+    """
+    Plot a grid of images using a given function for each image.
+
+    Parameters:
+    imgs (list): List of images to be plotted.
+    func (function): The function to call for each image to plot it.
+    intrv (int, optional): Interval of images to skip. Default is 5.
+    fig (matplotlib.figure.Figure, optional): Figure to plot on. If None, a new figure is created. Default is None.
+    figsize (tuple, optional): Figure size. Default is (10, 10).
+    picked (list, optional): List of indices of images to plot. If None, all interval images are plotted. Default is None.
+    **kwargs: Keyword arguments passed to the function `func`.
+
+    Returns:
+    tuple: Tuple containing axes and figure.
+    """
+    if picked is not None:
+        it = list(picked)
+        nrows = (len(it)+intrv-1)//intrv 
+    else:
+        it = range(0, len(imgs), intrv)
+        nrows = (len(imgs)+1)//(intrv**2)
     if fig is None:
-        fig, axes = plt.subplots((len(imgs+1))//(intrv**2), intrv, figsize=figsize)
+        fig, axes = plt.subplots(nrows, intrv, figsize=figsize)
     else:
         axes = fig.subplots((len(imgs+1))//(intrv**2), intrv)
-    for ax, i in zip(axes.flatten(), range(0, len(imgs), intrv)):
+    for ax, i in zip(axes.flatten(), it):
         func(ax, i)
         # turnoff axis
         # ax.axis('off')
@@ -188,8 +222,17 @@ def plt_img3d_axes(imgs, func, intrv=5, fig=None, figsize=(10, 10), **kwargs):
         ax.set_title(f'{i}')
     # tight
     plt.tight_layout()
-    # plt.show()
     return axes, fig
+
+# downsample p_ffd
+def downsample_ffd(p_ffd, factor=2):
+    new_p_ffd = quick_FFD([p_ffd.n_control_points[0]//factor]*3)
+    new_p_ffd.box_length = p_ffd.box_length
+    new_p_ffd.box_origin = p_ffd.box_origin
+    new_p_ffd.array_mu_x = p_ffd.array_mu_x[::factor,::factor,::factor]
+    new_p_ffd.array_mu_y = p_ffd.array_mu_y[::factor,::factor,::factor]
+    new_p_ffd.array_mu_z = p_ffd.array_mu_z[::factor,::factor,::factor]
+    return new_p_ffd
 
 import sys
 sys.path.append(".")

@@ -44,7 +44,7 @@ parser.add_argument('--ortho', type=float, default=0.1, help="use ortho loss")
 parser.add_argument('--det', type=float, default=0.1, help="use det loss")
 parser.add_argument('--reg', type=float, default=1, help="use reg loss")
 parser.add_argument('-ks', '--keep_size', type=float, default=0, help="use keep-size loss")
-parser.add_argument('--size_type', choices=['smooth', 'organ', 'constant'], default='organ')
+parser.add_argument('-st', '--size_type', choices=['whole', 'organ', 'constant'], default='organ')
 parser.add_argument('-m', '--masked', choices=['soft', 'seg', 'hard'], default='',
      help="mask the tumor part when calculating similarity loss")
 parser.add_argument('-msk_thr', '--mask_threshold', type=float, default=2, help="volume changing threshold for mask")
@@ -208,8 +208,58 @@ def main():
             if args.invert_loss:
                 fixed, moving = torch.cat([fixed, moving], dim=0), torch.cat([moving, fixed], dim=0)
                 seg1, seg2 = torch.cat([seg1, seg2], dim=0), torch.cat([seg2, seg1], dim=0)
+            
+            # generate mask for tumor region according to flow
+            if args.masked in ['soft', 'hard']:
+                with torch.no_grad():
+                    stage1_inputs = torch.cat([fixed, moving], dim=0)
+                    template_input = template_image.expand_as(stage1_inputs)
+                    # achieve organ mask via regristration
+                    _, _, s1_agg_flows = stage1_model(stage1_inputs, template_input, return_neg=args.stage1_rev)
+                    s1_flow = s1_agg_flows[-1]
+                    w_template_seg = stage1_model.reconstruction(template_seg.expand_as(template_input), s1_flow)
+                    mask_fixing = w_template_seg[:fixed.shape[0]]
+                    mask_moving = w_template_seg[fixed.shape[0]:]
+                    # check whether s1_agg_flows should be reversed
+                    s1_flow_moving = s1_flow[fixed.shape[0]:]
+                    # find shrinking tumors
+                    w_moving, _, rs1_agg_flows = stage1_model(template_input[:fixed.shape[0]], moving, return_neg=args.stage1_rev)
+                    rs1_flow = rs1_agg_flows[-1]
+                    # find the area ranked by dissimilarity
+                    def dissimilarity(x, y):
+                        x_mean = x-x.mean(dim=(1,2,3,4), keepdim=True)
+                        y_mean = y-y.mean(dim=(1,2,3,4), keepdim=True)
+                        correlation = x_mean*y_mean
+                        return -correlation
+                    dissimilarity_moving = dissimilarity(template_input[:fixed.shape[0]], w_moving[-1])
+                flow_det_moving = jacobian_det(rs1_flow, return_det=True)
+                flow_det_moving = flow_det_moving.unsqueeze(1).abs()
+                # get n x n neighbors 
+                n = args.masked_neighbor
+                if args.stage1_rev: flow_ratio = 1/flow_det_moving
+                else: flow_ratio = flow_det_moving
+                flow_ratio = flow_ratio.clamp(1/4,4)
+                sizes = F.interpolate(flow_ratio, size=fixed.shape[-3:], mode='trilinear', align_corners=False) \
+                    if flow_ratio.shape[-3:]!=fixed.shape[-3:] else flow_ratio
+                flow_ratio = F.avg_pool3d(sizes, kernel_size=n, stride=1, padding=n//2)
+                flow_ratio[~(mask_moving>0.5)]=0
+                # sizes = sizes/sizes.mean(dim=(2,3,4), keepdim=True)
+                # log_scalars['zooming_q0.9'] = torch.quantile(sizes, .9)
+                # log_scalars['zooming_q0.1'] = torch.quantile(sizes, .1)
+                if args.masked=='soft':
+                    # normalize soft mask
+                    soft_mask = flow_ratio/flow_ratio.mean(dim=(2,3,4), keepdim=True)
+                elif args.masked=='hard':
+                        # thres = torch.quantile(w_n, .9)
+                    thres = args.mask_threshold
+                    hard_mask = flow_ratio > thres
+                    with torch.no_grad():
+                        warped_hard_mask = mmodel.reconstruction(hard_mask.float(), agg_flows[-1]) > 0.5
+                    input_seg = hard_mask + mask_moving
+            elif args.masked=='seg': input_seg = seg2.float()
+            
             if args.in_channel==3:
-                moving_ = torch.cat([moving, seg2.float()], dim=1)
+                moving_ = torch.cat([moving, input_seg], dim=1)
             else:
                 moving_ = moving
             warped_, flows, agg_flows, affine_params = model(fixed, moving_, return_affine=True)
@@ -220,15 +270,15 @@ def main():
             A = affine_params['theta'][..., :3, :3]
             ort = ortho_factor * ortho_loss(A)
             det = det_factor * det_loss(A)
-
             with torch.no_grad():
-                w_seg = mmodel.reconstruction(torch.cat([seg2.float(), (seg2>1.5).float()], dim=0), agg_flows[-1].repeat(2,1,1,1,1))
-                w_seg2, warped_tseg = w_seg[:len(w_seg)//2], w_seg[len(w_seg)//2:]>0.5
+                w_seg2 = mmodel.reconstruction(seg2.float(), agg_flows[-1])
+                warped_tseg = w_seg2>1.5
             # add log scalar tumor/ratio
             if (seg2>1.5).sum().item() > 0:
                 t_c = (warped_tseg.sum(dim=(1,2,3,4)).float() / (seg2 > 1.5).sum(dim=(1,2,3,4)).float())
                 t_c = t_c[t_c.isnan()==False]
                 log_scalars['tumor_change'] = torch.where(t_c>1, t_c, 1/t_c).mean().item() 
+
             # sim and reg loss
             if not args.masked:
                 sim = sim_loss(fixed, warped[-1])
@@ -239,69 +289,29 @@ def main():
                     sim = masked_sim_loss(fixed, warped[-1], mask)
                     mask_fixing = seg1
                     mask_moving = seg2
-                elif args.masked == 'soft' or args.masked =='hard':
+                    kmask = w_seg2
+                elif args.masked == 'soft':
+                    # soft mask * sim loss per pixel
+                    sim = masked_sim_loss(fixed, warped[-1], mask, soft_mask)
                     with torch.no_grad():
-                        stage1_inputs = torch.cat([fixed, moving], dim=0)
-                        template_input = template_image.expand_as(stage1_inputs)
-                        # achieve organ mask via regristration
-                        _, _, s1_agg_flows = stage1_model(stage1_inputs, template_input, return_neg=args.stage1_rev)
-                        s1_flow = s1_agg_flows[-1]
-                        w_template_seg = stage1_model.reconstruction(template_seg.expand_as(template_input), s1_flow)
-                        mask_fixing = w_template_seg[:fixed.shape[0]]
-                        # s1_flow_fixing = s1_flow[:fixed.shape[0]]
-                        mask_moving = w_template_seg[fixed.shape[0]:]
-                        s1_flow_moving = s1_flow[fixed.shape[0]:]
-                        # find shrinking tumors
-                        w_moving, _, rs1_agg_flows = stage1_model(template_input[:fixed.shape[0]], moving, return_neg=args.stage1_rev)
-                        rs1_flow = rs1_agg_flows[-1]
-                        # find the area ranked by dissimilarity
-                        def dissimilarity(x, y):
-                            x_mean = x-x.mean(dim=(1,2,3,4), keepdim=True)
-                            y_mean = y-y.mean(dim=(1,2,3,4), keepdim=True)
-                            correlation = x_mean*y_mean
-                            return -correlation
-                        dissimilarity_moving = dissimilarity(template_input[:fixed.shape[0]], w_moving)
-
-                    # check whether s1_agg_flows should be reversed
-                    flow_det_moving = jacobian_det(rs1_flow, return_det=True)
-                    flow_det_moving = flow_det_moving.unsqueeze(1).abs()
-                    # get n x n neighbors 
-                    n = args.masked_neighbor
-                    if args.stage1_rev: flow_ratio = 1/flow_det_moving
-                    else: flow_ratio = flow_det_moving
-                    flow_ratio = flow_ratio.clamp(1/4,4)
-                    sizes = F.interpolate(flow_ratio, size=fixed.shape[-3:], mode='trilinear', align_corners=False) \
-                        if flow_ratio.shape[-3:]!=fixed.shape[-3:] else flow_ratio
-                    flow_ratio = F.avg_pool3d(sizes, kernel_size=n, stride=1, padding=n//2)
-                    flow_ratio[~(mask_moving>0.5)]=0
-                    # sizes = sizes/sizes.mean(dim=(2,3,4), keepdim=True)
-                    log_scalars['zooming_q0.9'] = torch.quantile(sizes, .9)
-                    log_scalars['zooming_q0.1'] = torch.quantile(sizes, .1)
-                    if args.masked=='soft':
-                        # normalize soft mask
-                        soft_mask = flow_ratio/flow_ratio.mean(dim=(2,3,4), keepdim=True)
-                        # soft mask * sim loss per pixel
-                        sim = masked_sim_loss(fixed, warped[-1], mask, soft_mask)
-                        # sim = masked_sim_loss(fixed, warped[-1], soft_mask.new_zeros(soft_mask.shape, dtype=bool), soft_mask)
-                    elif args.masked=='hard':
-                         # thres = torch.quantile(w_n, .9)
-                        thres = args.mask_threshold
-                        hard_mask = flow_ratio > thres
-                        with torch.no_grad():
-                            warped_hard_mask = mmodel.reconstruction(hard_mask.float(), agg_flows[-1]) > 0.5
-                        assert warped_hard_mask.requires_grad == False
-                        sim = masked_sim_loss(fixed, warped[-1], warped_hard_mask)
-                        warped_tseg = warped_hard_mask
-
+                        warped_mask = mmodel.reconstruction(soft_seg.float(), agg_flows[-1])
+                    kmask = warped_mask
+                elif args.masked =='hard':
+                    # TODO: may consider mask outside organ regions
+                    sim = masked_sim_loss(fixed, warped[-1], warped_hard_mask)
+                    with torch.no_grad():
+                        warped_mask = mmodel.reconstruction(input_seg.float(), agg_flows[-1])
+                    kmask = warped_mask
             reg = reg_loss(flows[1:]) * args.reg
+
+            # VP loss
             if args.keep_size!=0:
-                # nonaffine_flow = flows[1]
-                # for flow in flows[2:]:
-                #     nonaffine_flow = mmodel.reconstruction(nonaffine_flow, flow) + flow
+                if args.size_type=='whole':
+                    kmask = kmask>0.5
+                elif args.size_type=='organ': 
+                    kmask = kmask>1.5
                 bs = agg_flows[-1].shape[0]
-                if args.size_type=='constant': ratio = 1
-                elif args.size_type=='organ': ratio = (mask_fixing>.5).view(bs,-1).sum(1)/(mask_moving>.5).view(bs, -1).sum(1); ratio=ratio.view(-1,1,1,1)
-                kmask = warped_tseg
+                ratio = (mask_fixing>.5).view(bs,-1).sum(1)/(mask_moving>.5).view(bs, -1).sum(1); ratio=ratio.view(-1,1,1,1)
                 k_sz = 0
                 ### single voxel ratio
                 if args.w_ks_voxel>0:
