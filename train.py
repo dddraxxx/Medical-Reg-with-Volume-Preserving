@@ -5,7 +5,7 @@ import os
 import time
 
 import numpy as np
-from tools.utils import load_model_from_dir, load_model
+from tools.utils import *
 import torch
 from torch.functional import F
 from networks.recursive_cascade_networks import RecursiveCascadeNetwork
@@ -34,7 +34,7 @@ parser.add_argument('--ctt', '--continue_training_this', type=str, default=None)
 parser.add_argument('--fixed_sample', type=int, default=100)
 parser.add_argument('-g', '--gpu', type=str, default='', help='GPU to use')
 parser.add_argument('-d', '--dataset', type=str, default='datasets/liver_cust.json', help='Specifies a data config')
-parser.add_argument('-ts', '--training_scheme', type=str, default='', help='Specifies a training scheme')
+parser.add_argument("-ts", "--training_scheme", type=lambda x:int(x) if x.isdigit() else x, default='', help='Specifies a training scheme')
 parser.add_argument('-aug', '--augment', default=True, type=lambda x: x.lower() in ['true', '1', 't', 'y', 'yes'], help='Augment data')
 parser.add_argument('--lr', type=float, default=1e-4)
 parser.add_argument('--lr_scheduler', default = 'step', type=str, help='lr scheduler', choices=['linear', 'step', 'cosine'])
@@ -118,10 +118,12 @@ def main():
         image_type = cfg.get('image_type', None)
         segmentation_class_value=cfg.get('segmentation_class_value', {'unknown':1})
 
-    print('Train', Split.TRAIN)
-    print('Val', Split.VALID)
-    train_dataset = Data(args.dataset, rounds=args.round*args.batch_size, scheme=args.training_scheme or Split.TRAIN)
-    val_dataset = Data(args.dataset, scheme=Split.VALID)
+    train_scheme = args.training_scheme or Split.TRAIN
+    val_scheme = Split.VALID
+    print('Train', train_scheme)
+    print('Val', val_scheme)
+    train_dataset = Data(args.dataset, rounds=args.round*args.batch_size, scheme=train_scheme)
+    val_dataset = Data(args.dataset, scheme=val_scheme)
 
     in_channels = args.in_channel
     model = RecursiveCascadeNetwork(n_cascades=args.n_cascades, im_size=image_size, base_network=args.base_network, cr_aff=True, in_channels=in_channels, compute_mask=None).cuda()
@@ -166,8 +168,7 @@ def main():
         train_sampler = torch.utils.data.distributed.DistributedSampler(train_dataset, shuffle=True)
         train_loader = DataLoader(train_dataset, batch_size=args.batch_size, num_workers=num_worker, sampler=train_sampler)
     else:
-        # train_sampler = torch.utils.data.RandomSampler(train_dataset)
-        train_loader = DataLoader(train_dataset, batch_size=args.batch_size, num_workers=num_worker, shuffle=True)
+        train_loader = DataLoader(train_dataset, batch_size=args.batch_size, num_workers=num_worker, shuffle=(not args.debug) and True)
     # val_sampler = torch.utils.data.distributed.DistributedSampler(val_dataset, shuffle=False)
     val_loader = DataLoader(val_dataset, batch_size=args.batch_size, num_workers=num_worker, shuffle=False)
 
@@ -221,24 +222,47 @@ def main():
                     # find shrinking tumors
                     w_moving, _, rs1_agg_flows = stage1_model(template_input[:fixed.shape[0]], moving, return_neg=args.stage1_rev)
                     rs1_flow = rs1_agg_flows[-1]
+                    w2_moving, _, rs2_agg_flows = stage1_model(template_input[:fixed.shape[0]], w_moving[-1], return_neg=args.stage1_rev)
+                    rs2_flow = stage1_model.composite_flow(rs1_flow, rs2_agg_flows[-1])
                     # find the area ranked by dissimilarity
                     def dissimilarity(x, y):
                         x_mean = x-x.mean(dim=(1,2,3,4), keepdim=True)
                         y_mean = y-y.mean(dim=(1,2,3,4), keepdim=True)
                         correlation = x_mean*y_mean
                         return -correlation
+                    def dissimilarity_mask(x, y, mask):
+                        x_mean = (x*mask).sum(dim=(1,2,3,4), keepdim=True)/mask.sum(dim=(1,2,3,4), keepdim=True)
+                        y_mean = (y*mask).sum(dim=(1,2,3,4), keepdim=True)/mask.sum(dim=(1,2,3,4), keepdim=True)
+                        x_ = x-x_mean
+                        y_ = y-y_mean
+                        correlation = x_*y_
+                        return -correlation
                     dissimilarity_moving = dissimilarity(template_input[:fixed.shape[0]], w_moving[-1])
-                flow_det_moving = jacobian_det(rs1_flow, return_det=True)
-                flow_det_moving = flow_det_moving.unsqueeze(1).abs()
-                # get n x n neighbors 
-                n = args.masked_neighbor
-                if args.stage1_rev: flow_ratio = 1/flow_det_moving
-                else: flow_ratio = flow_det_moving
-                flow_ratio = flow_ratio.clamp(1/4,4)
-                sizes = F.interpolate(flow_ratio, size=fixed.shape[-3:], mode='trilinear', align_corners=False) \
-                    if flow_ratio.shape[-3:]!=fixed.shape[-3:] else flow_ratio
-                flow_ratio = F.avg_pool3d(sizes, kernel_size=n, stride=1, padding=n//2)
-                flow_ratio[~(mask_moving>0.5)]=0
+                def filter_nonorgan(x, seg):
+                    x[~(seg>0.5)] = 0
+                    return x
+                def extract_tumor_mask(stage1_moving_flow):
+                    flow_det_moving = jacobian_det(stage1_moving_flow, return_det=True)
+                    flow_det_moving = flow_det_moving.unsqueeze(1).abs()
+                    # get n x n neighbors 
+                    n = args.masked_neighbor
+                    if args.stage1_rev: flow_ratio = 1/flow_det_moving
+                    else: flow_ratio = flow_det_moving
+                    flow_ratio = flow_ratio.clamp(1/4,4)
+                    sizes = F.interpolate(flow_ratio, size=fixed.shape[-3:], mode='trilinear', align_corners=False) \
+                        if flow_ratio.shape[-3:]!=fixed.shape[-3:] else flow_ratio
+                    flow_ratio = F.avg_pool3d(sizes, kernel_size=n, stride=1, padding=n//2)
+                    filter_nonorgan(flow_ratio, mask_fixing)
+                    globals().update(locals())
+                    return flow_ratio
+                flow_ratio = extract_tumor_mask(rs1_flow)
+                if args.debug:
+                    # visualize w_moving, seg2, moving
+                    combo_imgs(*w_moving[-1][:,0]).save('w_moving.jpg')
+                    combo_imgs(*moving[:,0]).save('moving.jpg')
+                    combo_imgs(*seg2[:,0]).save('seg2.jpg')
+                    combo_imgs(*flow_ratio[:,0]).save('flow_ratio.jpg')
+                    combo_imgs(*dissimilarity_moving[:,0]).save('dissimilarity_moving.jpg')
                 # sizes = sizes/sizes.mean(dim=(2,3,4), keepdim=True)
                 # log_scalars['zooming_q0.9'] = torch.quantile(sizes, .9)
                 # log_scalars['zooming_q0.1'] = torch.quantile(sizes, .1)
