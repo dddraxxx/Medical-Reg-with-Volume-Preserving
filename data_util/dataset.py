@@ -73,38 +73,39 @@ class Data(Dataset):
 
         self.paired = paired
 
-        def convert_int(key):
-            try:
-                return int(key)
-            except ValueError as e:
-                return key
-        scheme = convert_int(scheme)
-        self.schemes = dict([(convert_int(k), v)
-                             for k, v in config['schemes'].items()])
-
         for k, v in self.subset.items():
             print('Number of data in {} is {}'.format(k, len(v)))
+
 
         self.affine = affine
         self.config = config
         self.scheme = scheme
-        if self.affine:
-            affine_dct = self.config.get('affine_matrix', {})
-            assert len(self.schemes[scheme]) == 1
-            self.affine_npy = [np.load(affine_dct[k], allow_pickle=True).item()
-                            for k in self.schemes[scheme].items() if k in affine_dct][0]
+        if self.scheme is not None:
+            def convert_int(key):
+                try:
+                    return int(key)
+                except ValueError as e:
+                    return key
+            scheme = convert_int(scheme)
+            self.schemes = dict([(convert_int(k), v)
+                                for k, v in config['schemes'].items()])
+            if self.affine:
+                affine_dct = self.config.get('affine_matrix', {})
+                assert len(self.schemes[scheme]) == 1
+                self.affine_npy = [np.load(affine_dct[k], allow_pickle=True).item()
+                                for k in self.schemes[scheme].items() if k in affine_dct][0]
         
-        # no fraction used
-        if 'lits_d'==scheme or 'lits_d' in self.schemes[scheme]:
-            print('using lits_d')
-            self.data_pairs = [(self.get_pairs_with_gt(self.subset[k]))
-                        for k, fraction in self.schemes[scheme].items()]
-        else:
-            self.data_pairs = [(self.get_pairs(list(self.subset[k].values())))
-                        for k, fraction in self.schemes[scheme].items()]
-        # chain the data pairs
-        self.data_pairs = [item for sublist in self.data_pairs for item in sublist]
-        self.rounds = rounds or len(self.data_pairs)
+            # no fraction used
+            if 'lits_d'==scheme or 'lits_d' in self.schemes[scheme]:
+                print('using lits_d')
+                self.data_pairs = [(self.get_pairs_with_gt(self.subset[k]))
+                            for k, fraction in self.schemes[scheme].items()]
+            else:
+                self.data_pairs = [(self.get_pairs(list(self.subset[k].values())))
+                            for k, fraction in self.schemes[scheme].items()]
+            # chain the data pairs
+            self.data_pairs = [item for sublist in self.data_pairs for item in sublist]
+            self.rounds = rounds or len(self.data_pairs)
 
     def get_instance(self, id):
         return self.files[id]
