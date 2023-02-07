@@ -1,16 +1,32 @@
+import sys
+sys.path.append("..")
+from tools.utils import load_model_from_dir
 from .transform import sample_power, free_form_fields
 from .base_networks import *
 from .layers import SpatialTransformer
+from .pre_register import PreRegister
 
 class RecursiveCascadeNetwork(nn.Module):
-    def __init__(self, n_cascades, im_size=(512, 512), base_network='VTN', in_channels=2, cr_aff=True):
+    """
+    A PyTorch module that implements the recursive cascaded network.
+
+    Args:
+        n_cascades (int): The number of cascades.
+        im_size (tuple): The size of the input image.
+        base_network (str): The base network to use. Can be 'VTN' or 'VXM'.
+        in_channels (int): The number of input channels.
+        compute_mask (bool): Whether to compute the mask before registration by using the pre-registration module.
+    """
+    def __init__(self, n_cascades, im_size=(512, 512), base_network='VTN', in_channels=2, compute_mask=False):
         super(RecursiveCascadeNetwork, self).__init__()
+        self.n_casescades = n_cascades
+        self.im_size = im_size
+        self.compute_mask = compute_mask
 
         device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         self.stems = nn.ModuleList()
         # See note in base_networks.py about the assumption in the image shape
-        print('using AffineStem with correct: {}'.format(cr_aff))
-        self.stems.append(VTNAffineStem(dim=len(im_size), im_size=im_size[0], flow_correct=cr_aff, in_channels=in_channels))
+        self.stems.append(VTNAffineStem(dim=len(im_size), im_size=im_size[0], in_channels=in_channels))
         assert base_network in BASE_NETWORK
         base = eval(base_network)
         for i in range(n_cascades):
@@ -46,9 +62,13 @@ class RecursiveCascadeNetwork(nn.Module):
                     torch.nn.init.zeros_(module.bias)
         
         def load_state_dict(self, state_dict, strict=True):
-            """Copies parameters and buffers from :attr:`state_dict`
+            """
+            Copies parameters and buffers from :attr:`state_dict`
             into this module and its descendants. If :attr:`strict` is ``True``,
-            then the keys of :attr:`state_dict` must exactly match the keys returned"""
+            then the keys of :attr:`state_dict` must exactly match the keys returned
+
+            Modified: To use pre-trained model with different in-channel for input
+            """
             own_state = self.state_dict()
             for name, param in state_dict.items():
                 if name not in own_state:
@@ -62,8 +82,49 @@ class RecursiveCascadeNetwork(nn.Module):
                     param = param.data
                 own_state[name].copy_(param)
         self.stems.load_state_dict = load_state_dict.__get__(self.stems, nn.ModuleList)
+        def train(self, mode=True):
+            """Sets the module in training mode.
+            This has any effect only on certain modules. See documentations of
+            particular modules for details of their behaviors in training/evaluation
+            mode.
+
+            Args:
+                mode (bool): whether to set training mode (``True``) or evaluation
+                    mode (``False``)
+
+            Modified: Use pre-register module to compute mask if self has pre_register attribute
+            """
+            # compute mask if self has pre_register attribute
+            self.compute_mask = not mode if getattr(self, 'pre_register', None) else False
+            self.training = mode
+            for module in self.children():
+                module.train(mode)
+        self.train = train.__get__(self, nn.Module)
+    
+    def build_stage1_model(self):
+        """
+        Build the stage 1 model from the saved state
+
+        Returns:
+            stage1_model (RecursiveCascadeNetwork | nn.Module): The stage 1 model
+        """
+        state_path = '/home/hynx/regis/recursive-cascaded-networks/logs/Jan08_180325_normal-vtn'
+        print('Building stage 1 model from', state_path)
+        stage1_model = RecursiveCascadeNetwork(n_cascades=self.n_casescades, im_size = self.im_size, base_network='VTN', cr_aff=True)
+        load_model_from_dir(state_path, stage1_model)
+        return stage1_model
+
+    def build_preregister(self, template_input, template_seg):
+        """
+        Build the pre-register module. The module is currently built on the stage1 model.
+        """
+        self.pre_register: PreRegister = PreRegister(self.build_stage1_model(), template_input, template_seg)
+        return self.pre_register
 
     def forward(self, fixed, moving, return_affine=False, return_neg=False):
+        if self.compute_mask:
+            moving_seg = self.pre_register(moving)
+            moving = torch.cat([moving, moving_seg], dim=1)
         flows = []
         stem_results = []
         agg_flows = []
@@ -97,8 +158,17 @@ class RecursiveCascadeNetwork(nn.Module):
         if return_affine:
             returns.append(affine_params)
         return returns
+    
+    def composite_flow(self, old_flow, new_flow ):
+        """
+        Composite two flows into one
+        """
+        return self.reconstruction(old_flow, new_flow) + new_flow
 
     def augment(self, img2: torch.Tensor, seg2: torch.Tensor):
+        """
+        Augment the image and segmentation with random free-form deformation. The current deforming range is [-.4, .4] pixels.
+        """
         bs, c, h, w, s = img2.shape
         control_fields = sample_power(-.4, .4, 3, (bs, 3, 5, 5, 5)).to(img2.device) * (img2.new_tensor([h, w, s])//4)[..., None, None, None]
         aug_flow = free_form_fields((h, w, s), control_fields)

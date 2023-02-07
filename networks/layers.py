@@ -4,10 +4,13 @@ import torch.nn.functional as nnf
 
 class SpatialTransformer(nn.Module):
     """
-    N-D Spatial Transformer
+    N-D Spatial Transformer. It takes a source image and a flow field and returns the warped image. The flow vectors start from the source image points and point to the target grid points. 
     """
-
     def __init__(self, size):
+        """
+        Args:
+            size (tuple): The size of the input image.
+        """
         super().__init__()
 
         # create sampling grid

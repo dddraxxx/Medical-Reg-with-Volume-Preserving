@@ -1,6 +1,18 @@
 import torch
 
 def sample_power(l, h, k, size=None):
+    """
+    Sample points from a power law distribution.
+
+    Parameters:
+    l (float): lower bound
+    h (float): upper bound
+    k (float): power 
+    size (tuple): number of samples
+
+    Returns:
+    tensor: samples
+    """
     r = ((h-l)/2)
     # uniform for size
     points = (torch.rand(size)-0.5)*2

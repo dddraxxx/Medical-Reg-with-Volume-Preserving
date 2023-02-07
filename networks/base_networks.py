@@ -255,6 +255,15 @@ class VXM(nn.Module):
         
 
 class VTN(nn.Module):
+    """
+    A PyTorch implementation of the VTN network. The network is a UNet.
+
+    Args:
+        im_size (tuple): The size of the input image.
+        flow_multiplier (float): The flow multiplier.
+        channels (int): The number of channels in the first convolution. The following convolution channels will be [2x, 4x, 8x, 16x] of this value.
+        in_channels (int): The number of input channels.
+    """
     def __init__(self, im_size=(128,128,128), flow_multiplier=1., channels=16, in_channels=2):
         super(VTN, self).__init__()
         self.flow_multiplier = flow_multiplier
@@ -340,7 +349,17 @@ class VTN(nn.Module):
 
 
 class VTNAffineStem(nn.Module):
-    def __init__(self, dim=1, channels=16, flow_multiplier=1., im_size=512, in_channels=2, flow_correct=True):
+    """
+    VTN affine stem. This is the first part of the VTN network. A multi-layer convolutional network that calculates the affine transformation parameters.
+    
+    Args:
+        dim (int): Dimension of the input image.
+        channels (int): Number of channels in the first convolution.
+        flow_multiplier (float): Multiplier for the flow output.
+        im_size (int): Size of the input image.
+        in_channels (int): Number of channels in the input image.
+    """
+    def __init__(self, dim=1, channels=16, flow_multiplier=1., im_size=512, in_channels=2):
         super(VTNAffineStem, self).__init__()
         self.flow_multiplier = flow_multiplier
         self.channels = channels
@@ -373,9 +392,6 @@ class VTNAffineStem(nn.Module):
             nn.Dropout(0.5),
             nn.Linear(256, 6*(dim - 1))
         )
-        # self.fc_loc = nn.Sequential(
-        #     nn.Linear(512 * channels * self.last_conv_size**dim, 6*(dim - 1)),
-        # )
         # Initialize the weights/bias with identity transformation
         self.fc_loc[-1].weight.data.zero_()
         """
@@ -389,7 +405,7 @@ class VTNAffineStem(nn.Module):
         else:
             self.fc_loc[-1].bias.data.copy_(torch.tensor([1, 0, 0, 0, 1, 0], dtype=torch.float))
         
-        self.create_flow = self.cr_flow if flow_correct else self.wr_flow
+        self.create_flow = self.cr_flow
         
     def cr_flow(self, theta, size):
         shape = size[2:]
@@ -419,6 +435,13 @@ class VTNAffineStem(nn.Module):
         return self.create_flow(neg_affine, size)
 
     def forward(self, fixed, moving):
+        """
+        Calculate the affine transformation parameters
+
+        Returns:
+            flow: the flow field
+            theta: dict, with the affine transformation parameters
+        """
         concat_image = torch.cat((fixed, moving), dim=1)  # 2 x 512 x 512
         x1 = self.conv1(concat_image)  # 16 x 256 x 256
         x2 = self.conv2(x1)  # 32 x 128 x 128
