@@ -42,6 +42,7 @@ parser.add_argument('-lm_r', '--lmk_radius', type=int, default=10, help='affecte
 parser.add_argument('-vl', '--visual_lmk', action='store_true', help='If visualize landmark')
 parser.add_argument('-rd', '--region_dice', default=True, type=lambda x: x.lower() in ['true', '1', 't', 'y', 'yes'], help='If calculate dice for each region')
 parser.add_argument('-sd', '--surf_dist', default=True, type=lambda x: x.lower() in ['true', '1', 't', 'y', 'yes'], help='If calculate dist for each surface')
+parser.add_argument('-mt', '--masked_type', type=str, default='seg', help='masked type')
 parser.add_argument('-only_vis', '--only_vis_target', action='store_true', help='If only visualize target')
 args = parser.parse_args()
 if args.checkpoint == 'normal':
@@ -78,6 +79,16 @@ def main():
     exp_name = re.search(r"([^\/]*_\d{6}_[^\/]*)", model_path).group(1)
     output_fname = './evaluations/{}_{}{}_{}.txt'.format(exp_name, (args.name and f'{args.name}_') or '', args.val_subset or Split.VALID, '' if not args.lmd else 'lm{}'.format(args.lmk_radius))
     print('will save to', output_fname)
+
+    # stage 1 model setup
+    if args.masked_type in ['soft', 'hard']:
+        template = list(val_dataset.subset['slits-temp'].values())[0]
+        template_image, template_seg = template['volume'], template['segmentation']
+        template_image = torch.tensor(np.array(template_image).astype(np.float32)).unsqueeze(0).unsqueeze(0).cuda()/255.0
+        template_seg = torch.tensor(np.array(template_seg).astype(np.float32)).unsqueeze(0).unsqueeze(0).cuda()
+        print('Using pre-register model as stage1')
+        model.build_preregister(template_image, template_seg).RCN.cuda()
+        model.compute_mask=True
 
     # run val
     model.eval()
@@ -119,13 +130,16 @@ def main():
         with torch.no_grad():
             fixed = fixed.cuda()
             moving = moving.cuda()
-            if args.masked:
+            if args.masked and args.masked_type =='seg':
                 moving_ = torch.cat([moving, seg2.float().cuda()], dim=1)
             else:
                 moving_ = moving
             warped_, flows, agg_flows, affine_params = model(fixed, moving_, return_affine=True, return_neg=args.reverse)
             warped = [i[:,:1,...] for i in warped_]
-            w_seg2 = model.reconstruction(seg2.float().cuda(), agg_flows[-1].float())
+            if args.masked:
+                w_seg2 = warped_[-1][:, 1:]
+            else:
+                w_seg2 = model.reconstruction(seg2.float().cuda(), agg_flows[-1].float())
         
         if args.save_pkl:
             magg_flows = torch.stack(agg_flows).transpose(0,1).detach().cpu()
@@ -143,7 +157,7 @@ def main():
                 if 'point1' in data and not (data['point1']==-1).any():
                     lmk1 = data['point1'].squeeze().cuda()
                 else:
-                    lmk1 : torch.Tensor = ag_flow.new_tensor([jsn[i.split('_')[-1]][slc] for i in id1]) # n, m, 3
+                    lmk1 : torch.Tensor = ag_flow.new_tensor([jsn[i.split('_')[-1].replace('lits','')][slc] for i in id1]) # n, m, 3
                 if 'point2' in data and not (data['point2']==-1).any():
                     lmk2 = data['point2'].squeeze().cuda() 
                 else:
@@ -339,9 +353,9 @@ def main():
     # save result
     with open(output_fname, 'w') as fo:
         # list result keys (each one takes space 8)
-        print('{:<18}'.format('id1'), '{:<18}'.format('id2'), '{:<12}'.format('avg_dice'), *['{:<12}'.format(k) for k in metric_keys], file=fo)
+        print('{:<30}'.format('id1'), '{:<30}'.format('id2'), '{:<12}'.format('avg_dice'), *['{:<12}'.format(k) for k in metric_keys], file=fo)
         for i in range(len(results['dices'])):
-            print('{:<18}'.format(results['id1'][i]), '{:<18}'.format(results['id2'][i]), '{:<12.4f}'.format(np.mean(results['dices'][i])), 
+            print('{:<30}'.format(results['id1'][i]), '{:<30}'.format(results['id2'][i]), '{:<12.4f}'.format(np.mean(results['dices'][i])), 
                 *['{:<12.4f}'.format(results[k][i]) for k in metric_keys], file=fo)
             # print(results['id1'][i], results['id2'][i], np.mean(results['dices'][i]), *[results[k][i] for k in metric_keys], file=fo)
         # write summary
