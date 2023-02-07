@@ -7,3 +7,4 @@ evaluations/*
 *.jpg
 .ipynb_checkpoints
 eval_excel/
+datasets
