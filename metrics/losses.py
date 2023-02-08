@@ -65,6 +65,17 @@ def dice_loss(fixed_mask, warped):
     return 1 - dice
 
 def dice_jaccard(seg1: torch.Tensor, seg2: torch.Tensor):
+    """
+    Compute dice and jaccard similarity between two segmentations
+
+    Args:
+        seg1: (N, (1,) H, W, S), torch.Tensor, binary segmentation
+        seg2: (N, (1,) H, W, S), torch.Tensor, binary segmentation
+
+    Returns:
+        dice: (N,), torch.Tensor, dice similarity
+        jaccard: (N,), torch.Tensor, jaccard similarity
+    """
     seg1 = seg1.flatten(1)
     seg2 = seg2.flatten(1)
     intersection = (seg1 * seg2).sum(1)
@@ -137,6 +148,52 @@ def reg_loss(flows):
     else:
         reg_loss = sum([regularize_loss_3d(flow) for flow in flows])
     return reg_loss
+
+def dice_loss(input, target, smooth=1, sharpen=0):
+    """
+    Computes the Dice loss between the predicted and target tensors. The loss is defined as 1 - Mean of Dice similarity coefficient (Dice shape is BxC).
+
+    Args:
+    - input (torch.Tensor): A tensor of shape (B, C, H, W, S) representing the predicted probabilities.
+    - target (torch.Tensor): A tensor of the same shape as `input` representing the ground truth.
+    - smooth (float): A smoothing factor to prevent division by zero.
+    - sharpen (float): A sharpening factor to increase the penalty for false predictions.
+
+    Returns:
+    - loss (torch.Tensor): A scalar tensor representing the Dice loss.
+    """
+    eps = 1e-15
+    bs, c = input.shape[:2]
+    # Flatten the input and target tensors
+    input = input.view(bs, c, -1)
+    target = target.view(bs, c, -1)
+    # Compute the Dice similarity coefficient
+    intersect = (input * target).sum(dim=2) + smooth
+    denominator = (input + target).sum(dim=2) +smooth
+    non_intersect = denominator - intersect
+    nominator = 2 * intersect * (1-sharpen) 
+    dice = 2 * nominator / (non_intersect + nominator + eps)
+    # Compute the negative Dice loss
+    loss = 1 - dice.mean()
+    return loss
+
+def focal_loss(inputs, targets, alpha=0.25, gamma=2):
+    """
+    Implementation of Focal Loss in PyTorch.
+    
+    Args:
+    - inputs: torch.Tensor, predicted binary class probabilities
+    - targets: torch.Tensor, true binary class labels
+    - alpha: float, weighting factor for hard samples (default: 0.25)
+    - gamma: float, focusing parameter for modulating factor (default: 2)
+    
+    Returns:
+    - F_loss: torch.Tensor, computed focal loss
+    """
+    inputs.clip_(1e-7, 1-1e-7)
+    pt = torch.where(targets == 1, inputs, 1 - inputs)
+    F_loss = alpha * (1-pt)**gamma * (-torch.log(pt))
+    return F_loss.mean()
 
 def find_surf(seg, n=3):
     '''seg: (**,D,H,W)
