@@ -12,7 +12,7 @@ from networks.recursive_cascade_networks import RecursiveCascadeNetwork
 from torch.optim import Adam
 from torch.optim.lr_scheduler import StepLR, LambdaLR
 from torch.utils.data import DataLoader
-from metrics.losses import det_loss, jacobian_det, masked_sim_loss, ortho_loss, reg_loss, dice_jaccard, sim_loss, surf_loss
+from metrics.losses import det_loss, focal_loss, jacobian_det, masked_sim_loss, ortho_loss, reg_loss, dice_jaccard, sim_loss, surf_loss, dice_loss
 import datetime as datetime
 from torch.utils.tensorboard import SummaryWriter
 # from data_util.ctscan import sample_generator
@@ -25,7 +25,7 @@ parser.add_argument('-bs', "--batch_size", type=int, default=4)
 parser.add_argument('-base', '--base_network', type=str, default='VTN')
 parser.add_argument('-n', "--n_cascades", type=int, default=3)
 parser.add_argument('-e', "--epochs", type=int, default=5)
-parser.add_argument("--round", type=int, default=20000)
+parser.add_argument("-r", "--round", type=int, default=20000)
 parser.add_argument("-v", "--val_steps", type=int, default=1000)
 parser.add_argument('-cf', "--checkpoint_frequency", default=0.5, type=float)
 parser.add_argument('-c', "--checkpoint", type=str, default=None)
@@ -43,18 +43,20 @@ parser.add_argument('--name', type=str, default='')
 parser.add_argument('--ortho', type=float, default=0.1, help="use ortho loss")
 parser.add_argument('--det', type=float, default=0.1, help="use det loss")
 parser.add_argument('--reg', type=float, default=1, help="use reg loss")
-parser.add_argument('-ks', '--keep_size', type=float, default=0, help="use keep-size loss")
-parser.add_argument('-st', '--size_type', choices=['whole', 'organ', 'constant'], default='organ')
 parser.add_argument('-m', '--masked', choices=['soft', 'seg', 'hard'], default='',
      help="mask the tumor part when calculating similarity loss")
 parser.add_argument('-msk_thr', '--mask_threshold', type=float, default=2, help="volume changing threshold for mask")
 parser.add_argument('-mn', '--masked_neighbor', type=int, default=5, help="for masked neibor calculation")
+parser.add_argument('-vp', '--vol_preserve', type=float, default=0, help="use volume-preserving loss")
+parser.add_argument('-st', '--size_type', choices=['whole', 'organ', 'constant', 'dynamic'], default='organ')
+parser.add_argument('--ks_norm', default='voxel', choices=['image', 'voxel'])
+parser.add_argument('-w_ksv', '--w_ks_voxel', default=1, type=float, help='Weight for voxel method in ks loss')
 parser.add_argument('--stage1_rev', type=bool, default=False, help="whether to use reverse flow in stage 1")
 parser.add_argument('-inv', '--invert_loss', action='store_true', help="invertibility loss")
 parser.add_argument('--surf_loss', default=0, type=float, help='Surface loss weight')
+parser.add_argument('-dc', '--dice_loss', default=0, type=float, help='Dice loss weight')
 parser.add_argument('-ic', '--in_channel', default=2, type=int, help='Input channel number')
-parser.add_argument('-w_ksv', '--w_ks_voxel', default=1, type=float, help='Weight for voxel method in ks loss')
-parser.add_argument('--ks_norm', default='voxel', choices=['image', 'voxel'])
+# mask calculation needs an extra mask as input
 parser.set_defaults(in_channel=3 if parser.parse_args().masked else 2)
 
 
@@ -108,6 +110,8 @@ def main():
         with open(log_dir+'/args.txt', 'a') as f:
             from pprint import pprint
             pprint(args.__dict__, f)
+            command = "python train.py" + " ".join(["--{} {}".format(k, v) for k, v in args.__dict__.items()])
+            print("\nRunning command:\n" + command, file=f)
     if args.debug:
         torch.autograd.set_detect_anomaly(True)
 
@@ -126,7 +130,7 @@ def main():
     val_dataset = Data(args.dataset, scheme=val_scheme)
 
     in_channels = args.in_channel
-    model = RecursiveCascadeNetwork(n_cascades=args.n_cascades, im_size=image_size, base_network=args.base_network, cr_aff=True, in_channels=in_channels, compute_mask=None).cuda()
+    model = RecursiveCascadeNetwork(n_cascades=args.n_cascades, im_size=image_size, base_network=args.base_network, in_channels=in_channels, compute_mask=None).cuda()
     if args.masked in ['soft', 'hard']:
         template = list(train_dataset.subset['slits-temp'].values())[0]
         template_image, template_seg = template['volume'], template['segmentation']
@@ -156,7 +160,7 @@ def main():
     trainable_params += list(mmodel.reconstruction.parameters())
 
     lr = args.lr
-    optim = Adam(trainable_params, lr=lr)
+    optim = Adam(trainable_params, lr=lr, weight_decay=1e-4)
     if args.lr_scheduler == 'step':
         scheduler = StepLR(optimizer=optim, step_size=10, gamma=0.96)
     elif args.lr_scheduler == 'linear':
@@ -181,6 +185,7 @@ def main():
     # use cudnn.benchmark
     torch.backends.cudnn.benchmark = True
     torch.backends.cudnn.enabled = True
+    torch.manual_seed(3749)
     for epoch in range(start_epoch, args.epochs):
         print(f"-----Epoch {epoch+1} / {args.epochs}-----")
         train_epoch_loss = 0
@@ -189,6 +194,8 @@ def main():
         t0 = default_timer()
         for iteration, data in enumerate(train_loader):
             log_scalars = {}
+            loss_dict = {}
+            loss = 0
             model.train()
             iteration += 1
             t1 = default_timer()
@@ -222,8 +229,8 @@ def main():
                     # find shrinking tumors
                     w_moving, _, rs1_agg_flows = stage1_model(template_input[:fixed.shape[0]], moving, return_neg=args.stage1_rev)
                     rs1_flow = rs1_agg_flows[-1]
-                    w2_moving, _, rs2_agg_flows = stage1_model(template_input[:fixed.shape[0]], w_moving[-1], return_neg=args.stage1_rev)
-                    rs2_flow = stage1_model.composite_flow(rs1_flow, rs2_agg_flows[-1])
+                    # w2_moving, _, rs2_agg_flows = stage1_model(template_input[:fixed.shape[0]], w_moving[-1], return_neg=args.stage1_rev)
+                    # rs2_flow = stage1_model.composite_flow(rs1_flow, rs2_agg_flows[-1])
                     # find the area ranked by dissimilarity
                     def dissimilarity(x, y):
                         x_mean = x-x.mean(dim=(1,2,3,4), keepdim=True)
@@ -291,13 +298,21 @@ def main():
             ort = ortho_factor * ortho_loss(A)
             det = det_factor * det_loss(A)
             with torch.no_grad():
+                # w_seg2 is always float type
                 w_seg2 = mmodel.reconstruction(seg2.float(), agg_flows[-1])
+                # warped_tseg represents the tumor region in the warped image, boolean type
                 warped_tseg = w_seg2>1.5
+                # w_oseg represents the organ region in the warped image, float type
+                w_oseg = mmodel.reconstruction((seg2>0.5).float(), agg_flows[-1])
             # add log scalar tumor/ratio
             if (seg2>1.5).sum().item() > 0:
                 t_c = (warped_tseg.sum(dim=(1,2,3,4)).float() / (seg2 > 1.5).sum(dim=(1,2,3,4)).float())
                 t_c = t_c[t_c.isnan()==False]
                 log_scalars['tumor_change'] = torch.where(t_c>1, t_c, 1/t_c).mean().item() 
+            # add log scalar dice_liver
+            with torch.no_grad():
+                dice_liver, _ = dice_jaccard(w_seg2>0.5, seg1>0.5)
+                log_scalars['dice_liver'] = dice_liver.mean().item()
 
             # sim and reg loss
             if not args.masked:
@@ -324,14 +339,33 @@ def main():
                     kmask = warped_mask
             reg = reg_loss(flows[1:]) * args.reg
 
+            # TODO: Add Dice Loss
+            if args.dice_loss>0:
+                # using vanilla dice loss
+                # dice_lo = dice_loss(w_oseg, (seg1>0.5).float()) * args.dice_loss
+                # using dice loss that emphasizes boundary
+                # dice_lo = dice_loss(w_oseg, (seg1>0.5).float(), sharpen=0.9) * args.dice_loss
+                # using focal loss to emphasize boundary
+                dice_lo = focal_loss(w_oseg, (seg1>0.5).float(), alpha=0.5) * args.dice_loss
+                loss_dict.update({'dice_loss': dice_lo.item()})
+                loss = loss + dice_lo
+
             # VP loss
-            if args.keep_size!=0:
+            if args.vol_preserve!=0:
+                bs = agg_flows[-1].shape[0]
+                # the following line uses mask_fixing and mask_moving to calculate the ratio
+                # ratio = (mask_fixing>.5).view(bs,-1).sum(1)/(mask_moving>.5).view(bs, -1).sum(1); 
+                # now I try to use the warped mask as the reference
+                ratio = (kmask>0.5).view(bs,-1).sum(1) / (mask_moving>0.5).view(bs, -1).sum(1)
+                ratio=ratio.view(-1,1,1,1)
                 if args.size_type=='whole':
                     kmask = kmask>0.5
                 elif args.size_type=='organ': 
                     kmask = kmask>1.5
-                bs = agg_flows[-1].shape[0]
-                ratio = (mask_fixing>.5).view(bs,-1).sum(1)/(mask_moving>.5).view(bs, -1).sum(1); ratio=ratio.view(-1,1,1,1)
+                # TODO: add dynamic VP loss
+                elif args.size_type=='dynamic':
+                    # not feasible, flow_ratio contradicts volume preservation
+                    w_flow_ratio = mmodel.reconstruction(flow_ratio, model.composite_flow(rs1_agg_flows[-1], agg_flows[-1]))
                 k_sz = 0
                 ### single voxel ratio
                 if args.w_ks_voxel>0:
@@ -359,7 +393,7 @@ def main():
                     k_sz_volume = k_sz_volume[k_sz_volume.nonzero()].mean()
                     k_sz = k_sz + (1-args.w_ks_voxel)*k_sz_volume
                     log_scalars['k_sz_volume'] = k_sz_volume
-                k_sz = k_sz  * args.keep_size
+                k_sz = k_sz  * args.vol_preserve
                 if torch.isnan(k_sz): k_sz = sim.new_zeros(1) # k_sz is all nan
             else:   
                 k_sz = sim.new_zeros(1)
@@ -372,13 +406,15 @@ def main():
                 f12_d, f21_d = f12_d.clamp(max=thres12), f21_d.clamp(max=thres21)
                 ivt = (f12_d.mean()+f21_d.mean())/2
                 ivt = ivt*0.1
-            else: ivt = sim.new_zeros(1)
+                loss_dict.update({'invert_loss':ivt.item()})
+                loss = loss + ivt
 
             if args.surf_loss:
                 surf = surf_loss(w_seg2>0.5, seg1>0.5, agg_flows[-1]) * args.surf_loss
-            else: surf = sim.new_zeros(1)
+                loss_dict.update({'surf_loss':surf.item()})
+                loss = loss + surf
 
-            loss = sim+reg+det+ort+k_sz+ivt+surf
+            loss = loss+sim+reg+det+ort+k_sz
             if loss.isnan().any():
                 import pdb; pdb.set_trace()
                 loss = 0
@@ -387,16 +423,14 @@ def main():
             # ddp reduce of loss
             loss, sim, reg = reduce_mean(loss), reduce_mean(sim), reduce_mean(reg)
             ort, det = reduce_mean(ort), reduce_mean(det)
-            loss_dict = {
+            loss_dict.update({
                 'sim_loss': sim.item(),
                 'reg_loss': reg.item(),
                 'ortho_loss': ort.item(),
                 'det_loss': det.item(),
-                'keep_size_loss': k_sz.item(),
-                'invert_loss': ivt.item(),
-                'surf_loss': surf.item(),
+                'vol_preserve_loss': k_sz.item(),
                 'loss': loss.item()
-            }
+            })
 
             train_epoch_loss = train_epoch_loss + loss.item()
             train_reg_loss = train_reg_loss + reg.item()
@@ -418,18 +452,16 @@ def main():
                                                                                          lr),
                           end='\n')
                     if not args.debug:
-                        writer.add_image('train/img1', fixed[0, :, 64], epoch * len(train_loader) + iteration)
-                        writer.add_image('train/img2', moving[0, :, 64], epoch * len(train_loader) + iteration)
-                        writer.add_image('train/warped', warped[-1][0, :, 64], epoch * len(train_loader) + iteration)
-                        writer.add_image('train/seg1', seg1[0, :, 64]/max_seg, epoch * len(train_loader) + iteration)
-                        writer.add_image('train/seg2', seg2[0, :, 64]/max_seg, epoch * len(train_loader) + iteration)
-
-                        writer.add_image('train/affine_warpd', warped[0][0, :, 64], epoch * len(train_loader) + iteration)
-                        writer.add_image('train/w_seg2', w_seg2[0, :, 64]/max_seg, epoch * len(train_loader) + iteration)
+                        writer.add_image('train/img1', visualize_3d(fixed[0, 0]), epoch * len(train_loader) + iteration)
+                        writer.add_image('train/img2', visualize_3d(moving[0, 0]), epoch * len(train_loader) + iteration)
+                        writer.add_image('train/warped', visualize_3d(warped[-1][0, 0]), epoch * len(train_loader) + iteration)
+                        writer.add_image('train/seg1', visualize_3d(seg1[0, 0]), epoch * len(train_loader) + iteration)
+                        writer.add_image('train/seg2', visualize_3d(seg2[0, 0]), epoch * len(train_loader) + iteration)
+                        writer.add_image('train/w_seg2', visualize_3d(w_seg2[0, 0]), epoch * len(train_loader) + iteration)
                         # add sizes and hard mask
-                        if 'sizes' in locals() and 'hard_mask' in locals():
-                            writer.add_image('train/grid_sizes', sizes[0, :, 64], epoch * len(train_loader) + iteration)
-                            writer.add_image('train/hard_mask', hard_mask[0, :, 64], epoch * len(train_loader) + iteration)
+                        if 'hard_mask' in locals():
+                            writer.add_image('train/hard_tum_mask', visualize_3d(hard_mask[0, 0]), epoch * len(train_loader) + iteration)
+                            writer.add_image('train/hard_org_mask', visualize_3d(mask_moving[0, 0]), epoch * len(train_loader) + iteration)
 
                 if not args.debug:
                     for k in loss_dict:
@@ -438,10 +470,10 @@ def main():
                     for k in log_scalars:
                         writer.add_scalar('train/'+k, log_scalars[k], epoch * len(train_loader) + iteration)
 
-                if iteration%args.val_steps==0 or args.debug:
+                if args.val_steps>0  and (iteration%args.val_steps==0 or args.debug):
                     print(f">>>>> Validation <<<<<")
                     val_epoch_loss = 0
-                    dice_loss = {k:0 for k in segmentation_class_value.keys()}
+                    dice_loss_val = {k:0 for k in segmentation_class_value.keys()}
                     to_ratios, total_to = 0,0
                     model.eval()
                     tb_imgs = {}
@@ -471,7 +503,7 @@ def main():
                                 seg1 = data['segmentation1'].cuda() > v-0.5
                                 seg2 = data['segmentation2'].cuda() > v-0.5
                                 dice, jac = dice_jaccard(seg1, w_seg2)
-                                dice_loss[k] += dice.mean().item()
+                                dice_loss_val[k] += dice.mean().item()
                             # add metrics for to_ratio
                             w_seg2 = mmodel.reconstruction(seg2.float(), agg_flows[-1].float())
                             to_ratio = (torch.sum(w_seg2>1.5, dim=(2, 3, 4)) / torch.sum(seg1>1.5, dim=(2, 3, 4))) /(torch.sum(w_seg2>0.5, dim=(2, 3, 4)) / torch.sum(seg1>0.5, dim=(2, 3, 4)))
@@ -494,7 +526,7 @@ def main():
                     print(f"Mean val loss: {mean_val_loss}")
                     val_loss_log.append(mean_val_loss)
                     mean_dice_loss = {}
-                    for k, v in dice_loss.items():
+                    for k, v in dice_loss_val.items():
                         mean_dc = v / len(val_loader)
                         mean_dice_loss[k] = mean_dc
                         print(f'Mean dice loss {k}: {mean_dc}')
@@ -506,12 +538,8 @@ def main():
                         for k in mean_dice_loss.keys():
                             writer.add_scalar(f'val/dice_{k}', mean_dice_loss[k], epoch * len(train_loader) + iteration)
                         # add img1, img2, seg1, seg2, warped, w_seg2
-                        writer.add_image('val/img1', tb_imgs['img1'][0,:,64], epoch * len(train_loader) + iteration)
-                        writer.add_image('val/img2', tb_imgs['img2'][0,:,64], epoch * len(train_loader) + iteration)
-                        writer.add_image('val/seg1', tb_imgs['seg1'][0,:,64]/max_seg, epoch * len(train_loader) + iteration)
-                        writer.add_image('val/seg2', tb_imgs['seg2'][0,:,64]/max_seg, epoch * len(train_loader) + iteration)
-                        writer.add_image('val/warped', tb_imgs['warped'][0,:,64], epoch * len(train_loader) + iteration)
-                        writer.add_image('val/w_seg2', tb_imgs['w_seg2'][0,:,64]/max_seg, epoch * len(train_loader) + iteration)
+                        for k, im in tb_imgs.items():
+                            writer.add_image(f'val/{k}', visualize_3d(im[0,0]), epoch * len(train_loader) + iteration)
 
             if local_rank==0 and iteration % ckp_freq == 0:
                 if not args.debug and not os.path.exists('./ckp/model_wts/'+run_id):
