@@ -63,7 +63,7 @@ def main():
     val_dataset = Data(args.dataset, scheme=args.val_subset or Split.VALID)
     val_loader = DataLoader(val_dataset, batch_size=args.batch_size, num_workers=min(8, args.batch_size), shuffle=False)
     # build framework
-    model = RecursiveCascadeNetwork(n_cascades=args.n_cascades, im_size=image_size, base_network=args.base_network, cr_aff=True, in_channels=2+args.masked).cuda()
+    model = RecursiveCascadeNetwork(n_cascades=args.n_cascades, im_size=image_size, base_network=args.base_network, in_channels=2+args.masked).cuda()
     # add checkpoint loading
     print("Loading checkpoint from {}".format(args.checkpoint))
     from tools.utils import load_model, load_model_from_dir
@@ -276,8 +276,12 @@ def main():
         if 'tl2_ratio' not in metric_keys:
             metric_keys.append('tl2_ratio')
             results['tl2_ratio'] = []
+        if 'l1l2_ratio' not in metric_keys:
+            metric_keys.append('l1l2_ratio')
+            results['l1l2_ratio'] = []
         results['tl1_ratio'].extend(tl1_ratio.cpu().numpy())
         results['tl2_ratio'].extend(tl2_ratio.cpu().numpy())
+        results['l1l2_ratio'].extend((seg1>.5).sum(dim=(1,2,3,4)).float() / (seg2>.5).sum(dim=(1,2,3,4)).float().cpu().numpy())
         dices = []
 
         for k,v in segmentation_class_value.items():
@@ -340,8 +344,8 @@ def main():
         if key not in results:
             results[key] = []
             metric_keys.append(key)
-        tumor_ratio = np.array(results['tumor_ratio'][-args.batch_size:])
-        organ_ratio = np.array(results['liver_ratio'][-args.batch_size:])
+        tumor_ratio = np.array(results['tumor_ratio'][-len(seg1):])
+        organ_ratio = np.array(results['liver_ratio'][-len(seg1):])
         to_ratio = tumor_ratio / organ_ratio
         results[key].extend(np.where(to_ratio<1, 1/to_ratio, to_ratio)**2)
 
