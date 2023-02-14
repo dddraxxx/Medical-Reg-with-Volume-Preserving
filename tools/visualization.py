@@ -114,6 +114,18 @@ def plot_landmarks(img, landmarks, fig=None, ax=None, save_path=None, every_n = 
         plt.savefig(save_path)
     return fig, axes
 
+def plot_to_PIL():
+    from io import BytesIO
+    from PIL import Image
+    # convert the plot into a bytes-like object
+    buf = BytesIO()
+    plt.savefig(buf, format="png")
+    buf.seek(0)
+    # open the image using PIL
+    im = Image.open(buf)
+    return im
+
+
 if __name__=='__main__':
     #%%
     import monai
