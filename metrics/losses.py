@@ -1,7 +1,19 @@
 import torch
 import torch.nn.functional as F
 
-def pearson_correlation(fixed, warped, soft_mask = None):
+def sim_loss(fixed, warped, soft_mask = None):
+    """
+    Compute pearson correlation between two tensors.
+    TODO: Add soft mask support.
+
+    Args:
+        fixed: (N, C, H, W, S), torch.Tensor, fixed image
+        warped: (N, C, H, W, S), torch.Tensor, warped image
+        soft_mask: (N, 1, H, W, S), torch.Tensor, soft mask, weights for each voxel
+
+    Returns:
+        loss: (N,), torch.Tensor, pearson correlation loss
+    """
     flatten_fixed = torch.flatten(fixed, start_dim=1)
     flatten_warped = torch.flatten(warped, start_dim=1)
 
@@ -14,14 +26,45 @@ def pearson_correlation(fixed, warped, soft_mask = None):
         soft_mask = torch.flatten(soft_mask, start_dim=1)
     else:
         soft_mask = 1
-    cov12 = torch.mean((flatten_fixed - mean1) * (flatten_warped - mean2) * soft_mask, dim=1, keepdim=True)
+    cov12 = torch.mean((flatten_fixed - mean1) * (flatten_warped - mean2), dim=1, keepdim=True)
     eps = 1e-6
     pearson_r = cov12 / torch.sqrt((var1 + eps) * (var2 + eps))
 
     raw_loss = 1 - pearson_r
+    return raw_loss.mean()*4
 
-    # not mean in official implementation
-    return raw_loss.sum()
+
+def masked_sim_loss(fixed, warped, mask, soft_mask=None):
+    """
+    Compute pearson correlation between two tensors, but mask out some voxels.
+    TODO: Add soft mask support.
+
+    Args:
+        fixed: (N, C, H, W, S), torch.Tensor, fixed image
+        warped: (N, C, H, W, S), torch.Tensor, warped image
+        mask: (N, 1, H, W, S), torch.Tensor, binary mask, 1 for masked voxels (masked voxel will not be included in the calculation)
+        soft_mask: (N, 1, H, W, S), torch.Tensor, soft mask, weights for each voxel (not supported yet)
+
+    Returns:
+        loss: (N,), torch.Tensor, pearson correlation loss
+    """
+    flatten_fixed = torch.flatten(fixed, start_dim=1).clone()
+    flatten_warped = torch.flatten(warped, start_dim=1).clone()
+    flatten_mask = torch.flatten(mask, start_dim=1)
+    nonmasked_num = flatten_mask.shape[1] - flatten_mask.sum(1)
+    # get masked mean: non-masked sum / non-masked count
+    flatten_fixed[flatten_mask] = 0
+    flatten_warped[flatten_mask] = 0
+    fixed_mean = flatten_fixed.sum(1) / nonmasked_num
+    warped_mean = flatten_warped.sum(1) / nonmasked_num
+    # calculate pearson correlation
+    fixed_var = torch.sum((flatten_fixed - fixed_mean.unsqueeze(1)) ** 2, dim=1) / nonmasked_num
+    warped_var = torch.sum((flatten_warped - warped_mean.unsqueeze(1)) ** 2, dim=1) / nonmasked_num
+    cov12 = torch.sum((flatten_fixed - fixed_mean.unsqueeze(1)) * (flatten_warped - warped_mean.unsqueeze(1)), dim=1) / nonmasked_num
+    eps = 1e-6
+    pearson_r = cov12 / torch.sqrt((fixed_var + eps) * (warped_var + eps))
+    raw_loss = 1 - pearson_r
+    return raw_loss.mean()*4
 
 
 def regularize_loss(flow):
@@ -121,26 +164,6 @@ def det_loss(A):
     det = torch.det(A)
     # l2 loss
     return torch.sum(0.5 * (det - 1) ** 2)
-
-def sim_loss(fixed, moving, soft_mask=None):
-    sim_loss = pearson_correlation(fixed, moving, soft_mask)
-    return sim_loss
-
-def masked_sim_loss(fixed, moving, mask, soft_weight=None):
-    flatten_fixed = torch.flatten(fixed, start_dim=1).clone()
-    flatten_warped = torch.flatten(moving, start_dim=1).clone()
-    flatten_mask = torch.flatten(mask, start_dim=1)
-    # get masked mean: non-masked sum / non-masked count
-    flatten_fixed[flatten_mask] = 0
-    flatten_warped[flatten_mask] = 0
-    fixed_mean = flatten_fixed.sum(1) / (flatten_mask.shape[1] - flatten_mask.sum(1))
-    warped_mean = flatten_warped.sum(1) / (flatten_mask.shape[1] - flatten_mask.sum(1))
-    # replace masked values with masked mean
-    flatten_fixed = torch.where(flatten_mask, fixed_mean[:, None], flatten_fixed)
-    flatten_warped = torch.where(flatten_mask, warped_mean[:, None], flatten_warped)
-    # calculate pearson correlation
-    sim_loss = pearson_correlation(flatten_fixed, flatten_warped, soft_weight)
-    return sim_loss
 
 def reg_loss(flows):
     if len(flows[0].size()) == 4: #(N, C, H, W)

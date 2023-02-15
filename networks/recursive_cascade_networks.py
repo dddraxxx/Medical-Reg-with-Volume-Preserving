@@ -110,7 +110,7 @@ class RecursiveCascadeNetwork(nn.Module):
         """
         state_path = '/home/hynx/regis/recursive-cascaded-networks/logs/Jan08_180325_normal-vtn'
         print('Building stage 1 model from', state_path)
-        stage1_model = RecursiveCascadeNetwork(n_cascades=self.n_casescades, im_size = self.im_size, base_network='VTN', cr_aff=True)
+        stage1_model = RecursiveCascadeNetwork(n_cascades=self.n_casescades, im_size = self.im_size, base_network='VTN', compute_mask=False, in_channels=2)
         load_model_from_dir(state_path, stage1_model)
         return stage1_model
 
