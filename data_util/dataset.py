@@ -1,3 +1,4 @@
+from itertools import chain
 import numpy as np
 import json
 import os
@@ -54,14 +55,21 @@ class FileManager:
 
 
 class Data(Dataset):
-    def __init__(self, split_path, rounds=None, affine=None, paired=False, scheme=None, **kwargs):
+    def __init__(self, split_path, rounds=None, affine=None, scheme=None, **kwargs):
         with open(split_path, 'r') as f:
             config = json.load(f)
         self.files = FileManager(config['files'])
         self.subset = {}
 
+        self.paired = {}
         for k, v in config['subsets'].items():
             self.subset[k] = {}
+            # unravel v if v is a list of lists
+            if len(v) and type(v[0]) == list:
+                # remember the paired list
+                self.paired[k] = v
+                # unravel the list
+                v = chain(*v)
             for entry in v:
                 if entry.split('/')[-1] == '*':
                     entries = self.files.files[entry[:entry.rfind('/')]].keys()
@@ -70,8 +78,6 @@ class Data(Dataset):
                         self.subset[k][ee] = self.files[ee]
                 else:
                     self.subset[k][entry] = self.files[entry]
-
-        self.paired = paired
 
         for k, v in self.subset.items():
             print('Number of data in {} is {}'.format(k, len(v)))
@@ -101,7 +107,7 @@ class Data(Dataset):
                 self.data_pairs = [(self.get_pairs_with_gt(self.subset[k]))
                             for k, fraction in self.schemes[scheme].items()]
             else:
-                self.data_pairs = [(self.get_pairs(list(self.subset[k].values())))
+                self.data_pairs = [(self.get_pairs(list(self.subset[k].values()), paired=self.paired.get(k, None)))
                             for k, fraction in self.schemes[scheme].items()]
             # chain the data pairs
             self.data_pairs = [item for sublist in self.data_pairs for item in sublist]
@@ -110,12 +116,18 @@ class Data(Dataset):
     def get_instance(self, id):
         return self.files[id]
     
-    def get_pairs(self, data, ordered=True):
+    def get_pairs(self, data, unordered=True, paired=None):
         pairs = []
+        if paired: 
+            # change the data to dict accoridng to the id
+            dct_data = {d['id'].replace('_','/'): d for d in data}
+            # return the data arranged by the paired list
+            return [(dct_data[d1], dct_data[d2]) for d1, d2 in paired]
         for i, d1 in enumerate(data):
             for j, d2 in enumerate(data):
                 if i != j:
-                    if ordered or i < j:
+                    # if ordered, only add the pairs with i < j; otherwise, add all pairs
+                    if unordered or i < j:
                         pairs.append((d1, d2))
         return pairs
     
