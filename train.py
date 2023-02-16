@@ -219,7 +219,7 @@ def main():
                     stage1_inputs = torch.cat([fixed, moving], dim=0)
                     template_input = template_image.expand_as(stage1_inputs)
                     # achieve organ mask via regristration
-                    _, _, s1_agg_flows = stage1_model(stage1_inputs, template_input, return_neg=args.stage1_rev)
+                    w_template, _, s1_agg_flows = stage1_model(stage1_inputs, template_input, return_neg=args.stage1_rev)
                     s1_flow = s1_agg_flows[-1]
                     w_template_seg = stage1_model.reconstruction(template_seg.expand_as(template_input), s1_flow)
                     mask_fixing = w_template_seg[:fixed.shape[0]]
@@ -259,17 +259,10 @@ def main():
                     sizes = F.interpolate(flow_ratio, size=fixed.shape[-3:], mode='trilinear', align_corners=False) \
                         if flow_ratio.shape[-3:]!=fixed.shape[-3:] else flow_ratio
                     flow_ratio = F.avg_pool3d(sizes, kernel_size=n, stride=1, padding=n//2)
-                    filter_nonorgan(flow_ratio, mask_fixing)
+                    filter_nonorgan(flow_ratio, moving_mask)
                     globals().update(locals())
                     return flow_ratio
-                flow_ratio = extract_tumor_mask(rs1_flow)
-                if args.debug:
-                    # visualize w_moving, seg2, moving
-                    combo_imgs(*w_moving[-1][:,0]).save('w_moving.jpg')
-                    combo_imgs(*moving[:,0]).save('moving.jpg')
-                    combo_imgs(*seg2[:,0]).save('seg2.jpg')
-                    combo_imgs(*flow_ratio[:,0]).save('flow_ratio.jpg')
-                    combo_imgs(*dissimilarity_moving[:,0]).save('dissimilarity_moving.jpg')
+                flow_ratio = extract_tumor_mask(rs1_flow, mask_moving)
                 # sizes = sizes/sizes.mean(dim=(2,3,4), keepdim=True)
                 # log_scalars['zooming_q0.9'] = torch.quantile(sizes, .9)
                 # log_scalars['zooming_q0.1'] = torch.quantile(sizes, .1)
@@ -283,6 +276,7 @@ def main():
                     with torch.no_grad():
                         warped_hard_mask = mmodel.reconstruction(hard_mask.float(), rs1_agg_flows[-1]) > 0.5
                     input_seg = hard_mask + mask_moving
+                        w3_seg2 = stage1_model.reconstruction(w2_seg2, rs3_agg_flows[-1])
             elif args.masked=='seg': input_seg = seg2.float()
             
             if args.in_channel==3:
