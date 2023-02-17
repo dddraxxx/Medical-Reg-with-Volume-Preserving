@@ -30,7 +30,7 @@ parser.add_argument("-v", "--val_steps", type=int, default=1000)
 parser.add_argument('-cf', "--checkpoint_frequency", default=0.5, type=float)
 parser.add_argument('-c', "--checkpoint", type=str, default=None)
 parser.add_argument('-ct', '--continue_training', action='store_true')
-parser.add_argument('--ctt', '--continue_training_this', action='store_true')
+parser.add_argument('--ctt', '--continue_training_this', type=str, default=None)
 parser.add_argument('--fixed_sample', type=int, default=100)
 parser.add_argument('-g', '--gpu', type=str, default='', help='GPU to use')
 parser.add_argument('-d', '--dataset', type=str, default='datasets/liver_cust.json', help='Specifies a data config')
@@ -90,7 +90,7 @@ def main():
     #     print("Creating visualization dir")
     #     os.makedirs('./ckp/visualization')
 
-    # mkdirs for log
+    # mkdirs for log and Tensorboard
     if not args.debug:
         if not args.ctt:
             print("Creating log dir")
@@ -101,7 +101,7 @@ def main():
                 print("Creating ckp dir")
                 os.makedirs(log_dir+'/model_wts/')
                 ckp_dir = log_dir+'/model_wts/'
-        if args.ctt:
+        else:
             print("Using log dir")
             log_dir = args.ctt
             ckp_dir = log_dir+'/model_wts/'
@@ -148,9 +148,9 @@ def main():
         else: load_model(torch.load(os.path.join(ckp)), model)
         print("Loaded checkpoint from {}".format(ckp))
         if args.continue_training or args.ctt:
-            print("Continue training from checkpoint")
             start_epoch = torch.load(ckp)['epoch']
-            # start_iter = torch.load(ckp)['global_iter'] + 1
+            start_iter = torch.load(ckp)['global_iter'] + 1
+            print("Continue training from checkpoint from epoch {} iter {}".format(start_epoch, start_iter))
         
     if dist.is_initialized():
         model = DDP(model, device_ids=[local_rank], output_device=local_rank)
@@ -311,7 +311,7 @@ def main():
                     combo_imgs(*seg2[:,0]).save('seg2.jpg')
                     combo_imgs(*flow_ratio[:,0]).save('flow_ratio.jpg')
                     combo_imgs(*hard_mask[:,0]).save('hard_mask.jpg')
-                    import debugpy; debugpy.listen(5678); print('Waiting for debugger attach'); debugpy.wait_for_client(); debugpy.breakpoint()
+                    # import debugpy; debugpy.listen(5678); print('Waiting for debugger attach'); debugpy.wait_for_client(); debugpy.breakpoint()
             elif args.masked=='seg': input_seg = seg2.float()
             
             if args.in_channel==3:
@@ -492,11 +492,6 @@ def main():
             train_epoch_loss = train_epoch_loss + loss.item()
             train_reg_loss = train_reg_loss + reg.item()
 
-            # if iteration == args.fixed_sample:
-            #     vis_batch.append(fixed)
-            #     vis_batch.append(moving)
-            #     vis_batch.append(warped)
-            #     vis_batch.append(flows)
             if local_rank==0 and (iteration%10==0):
                 if iteration<500 or iteration % 500 == 0:
                     print('*%s* ' % run_id,
@@ -551,10 +546,10 @@ def main():
                                 moving_ = moving
                             warped_, flows, agg_flows = mmodel(fixed, moving_)
                             warped = [i[:, :1] for i in warped_]
-                            if args.masked:
-                                w_seg2 = warped_[-1][:, 1:]
-                            else:
-                                w_seg2 = model.reconstruction(seg2.float().cuda(), agg_flows[-1].float())
+                            # you cannot use computed masked here because w_seg2 is used for evaluation and needs to be GT
+                            # if args.masked:
+                                # w_seg2 = warped_[-1][:, 1:]
+                            w_seg2 = model.reconstruction(seg2.float().cuda(), agg_flows[-1].float())
                             sim, reg = sim_loss(fixed, warped[-1]), reg_loss(flows[1:])
                             loss = sim + reg
                             val_epoch_loss += loss.item()
@@ -567,8 +562,8 @@ def main():
                             # add metrics for to_ratio
                             to_ratio = (torch.sum(w_seg2>1.5, dim=(2, 3, 4)) / torch.sum(seg2>1.5, dim=(2, 3, 4))) /(torch.sum(w_seg2>0.5, dim=(2, 3, 4)) / torch.sum(seg2>0.5, dim=(2, 3, 4)))
                             to_ratio = torch.where(to_ratio>1, to_ratio, 1/to_ratio)
-                            # only select those that are not nan
-                            to_ratio = to_ratio[to_ratio.isnan() == False]
+                            # only select those that are not nan or inf
+                            to_ratio = to_ratio[to_ratio.isfinite() & (~to_ratio.isnan())]
                             to_ratios += to_ratio.sum()
                             total_to += len(to_ratio)
 
