@@ -241,7 +241,7 @@ def main():
                     n = args.masked_neighbor
                     if args.stage1_rev: flow_ratio = 1/flow_det_moving
                     else: flow_ratio = flow_det_moving
-                    flow_ratio = flow_ratio.clamp(1/4,4)
+                    flow_ratio = flow_ratio.clamp(1/3,3)
                     sizes = F.interpolate(flow_ratio, size=fixed.shape[-3:], mode='trilinear', align_corners=False) \
                         if flow_ratio.shape[-3:]!=fixed.shape[-3:] else flow_ratio
                     flow_ratio = F.avg_pool3d(sizes, kernel_size=n, stride=1, padding=n//2)
@@ -249,9 +249,6 @@ def main():
                     globals().update(locals())
                     return flow_ratio
                 flow_ratio = extract_tumor_mask(rs1_flow, mask_moving)
-                # sizes = sizes/sizes.mean(dim=(2,3,4), keepdim=True)
-                # log_scalars['zooming_q0.9'] = torch.quantile(sizes, .9)
-                # log_scalars['zooming_q0.1'] = torch.quantile(sizes, .1)
                 if args.masked=='soft':
                     # normalize soft mask
                     soft_mask = flow_ratio/flow_ratio.mean(dim=(2,3,4), keepdim=True)
