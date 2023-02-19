@@ -1,4 +1,4 @@
-<span style="color:red"> This is a pytorch version of the [original tensorflow implementation](https://github.com/microsoft/Recursive-Cascaded-Networks) and is based on [this repo](https://github.com/ivan-jgr/recursive-cascaded-networks) </span>
+<span style="color:red"> This is a pytorch version of the [original tensorflow implementation](https://github.com/microsoft/Recursive-Cascaded-Networks) and is based on [this repo](https://github.com/ivan-jgr/recursive-cascaded-networks). </span>
 
 # Recursive Cascaded Networks for Unsupervised Medical Image Registration
 

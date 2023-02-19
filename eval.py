@@ -65,13 +65,13 @@ def main():
     # build framework
     model = RecursiveCascadeNetwork(n_cascades=args.n_cascades, im_size=image_size, base_network=args.base_network, in_channels=2+args.masked).cuda()
     # add checkpoint loading
-    print("Loading checkpoint from {}".format(args.checkpoint))
     from tools.utils import load_model, load_model_from_dir
     model_path = args.checkpoint
     if os.path.isdir(args.checkpoint):
         model_path = load_model_from_dir(args.checkpoint, model)
     else:
         load_model(torch.load(model_path), model)
+    print("Loading checkpoint from {}".format(model_path))
     
     # parent of model path
     import re
@@ -122,8 +122,7 @@ def main():
             bound_idx = (seg2_surf_tumor.sum(dim=(1,2,3,4))==0)
             if not bound_idx.any(): continue
             else: data=pick_data(bound_idx, data)
-        seg1, seg2 = data['segmentation1'], data['segmentation2']
-        # seg1, seg2 = (seg1>0.5).float(), (seg2>0.5).float()
+        seg1, seg2 = data['segmentation1'].float(), data['segmentation2'].float()
                 
         fixed, moving = data['voxel1'], data['voxel2']
         id1, id2 = data['id1'], data['id2']
@@ -226,9 +225,9 @@ def main():
         ### Debug use
         pairs = list(zip(id1, id2))
         # target_pair = ('lits_{}'.format(84), 'lits_{}'.format(40))
-        # target_pair = ('lits_51', '51')
+        target_pair = ('lits_51', '51')
         # target_pairs = [('lits_{}'.format(51), 'lits_{}'.format(33))]
-        target_pair = ('lits_{}'.format(51), 'yanx_{}'.format(14))
+        # target_pair = ('lits_{}'.format(51), 'yanx_{}'.format(14))
         # target_pair = ('lits_{}'.format(115), 'lits_{}'.format(128))
         # if any([p in pairs for p in target_pairs]):
         if target_pair in pairs:
@@ -265,34 +264,18 @@ def main():
             if args.only_vis_target: quit()
         elif args.only_vis_target:
             continue
-        results['id1'].extend(id1)
-        results['id2'].extend(id2)
-        # add tumor:liver ratio
-        tl1_ratio = (seg1>1.5).sum(dim=(1,2,3,4)).float() / (seg1>0.5).sum(dim=(1,2,3,4)).float()
-        tl2_ratio = (seg2>1.5).sum(dim=(1,2,3,4)).float() / (seg2>0.5).sum(dim=(1,2,3,4)).float()
-        if 'tl1_ratio' not in metric_keys:
-            metric_keys.append('tl1_ratio')
-            results['tl1_ratio'] = []
-        if 'tl2_ratio' not in metric_keys:
-            metric_keys.append('tl2_ratio')
-            results['tl2_ratio'] = []
-        if 'l1l2_ratio' not in metric_keys:
-            metric_keys.append('l1l2_ratio')
-            results['l1l2_ratio'] = []
-        results['tl1_ratio'].extend(tl1_ratio.cpu().numpy())
-        results['tl2_ratio'].extend(tl2_ratio.cpu().numpy())
-        results['l1l2_ratio'].extend((seg1>.5).sum(dim=(1,2,3,4)).float() / (seg2>.5).sum(dim=(1,2,3,4)).float().cpu().numpy())
         dices = []
 
         for k,v in segmentation_class_value.items():
             if args.region_dice:
-                seg1 = data['segmentation1'].cuda() > v-0.5
-                seg2 = data['segmentation2'].cuda() > v-0.5
+                sseg1 = data['segmentation1'].cuda() > v-0.5
+                sseg2 = data['segmentation2'].cuda() > v-0.5
+                w_sseg2 =  w_seg2 > (v-0.5)
             else:
-                seg1 = data['segmentation1'].cuda() == v
-                seg2 = data['segmentation2'].cuda() == v
-            w_seg2 = model.reconstruction(seg2.float(), agg_flows[-1].float()) > 0.5
-            dice, jac = dice_jaccard(seg1, w_seg2)
+                sseg1 = data['segmentation1'].cuda() == v
+                sseg2 = data['segmentation2'].cuda() == v
+                w_sseg2 = (w_seg2>v-0.5) & (w_seg2<v+0.5)
+            dice, jac = dice_jaccard(sseg1, w_sseg2)
             key = 'dice_{}'.format(k)
             if key not in results:
                 results[key] = []
@@ -300,15 +283,15 @@ def main():
             results[key].extend(dice.cpu().numpy())
             dices.append(dice.cpu().numpy())
             # add original dice
-            original_dice, _ = dice_jaccard(seg1, seg2)
+            original_dice, _ = dice_jaccard(sseg1, sseg2)
             key = 'o_dice_{}'.format(k)
             if key not in results:
                 results[key] = []
                 metric_keys.append(key)
             results[key].extend(original_dice.cpu().numpy())
             # calculate size ratio
-            original_size = torch.sum(seg2, dim=(1,2,3,4)).float()
-            current_size = torch.sum(w_seg2, dim=(1,2,3,4)).float()
+            original_size = torch.sum(sseg2, dim=(1,2,3,4)).float()
+            current_size = torch.sum(w_sseg2, dim=(1,2,3,4)).float()
             size_ratio = current_size / original_size
             key = '{}_ratio'.format(k)
             if key not in results:
@@ -319,7 +302,7 @@ def main():
             ### Calculate surface deviation metrics (surface_dice, hd-95)
             if args.surf_dist:
                 key = 'hd95_{}'.format(k)
-                surface_distance = [compute_surface_distances(seg1.cpu().numpy()[i,0], w_seg2.cpu().numpy()[i,0]) for i in range(seg1.shape[0])]
+                surface_distance = [compute_surface_distances(sseg1.cpu().numpy()[i,0], w_sseg2.cpu().numpy()[i,0]) for i in range(seg1.shape[0])]
 
                 hd95 = [compute_robust_hausdorff(s, 95) for s in surface_distance]
                 if key not in results:
@@ -340,6 +323,25 @@ def main():
                     results[key] = []
                     metric_keys.append(key)
                 results[key].extend(asd)
+        
+        results['id1'].extend(id1)
+        results['id2'].extend(id2)
+        # add tumor:liver ratio
+        tl1_ratio = (seg1>1.5).sum(dim=(1,2,3,4)).float() / (seg1>0.5).sum(dim=(1,2,3,4)).float()
+        tl2_ratio = (seg2>1.5).sum(dim=(1,2,3,4)).float() / (seg2>0.5).sum(dim=(1,2,3,4)).float()
+        if 'tl1_ratio' not in metric_keys:
+            metric_keys.append('tl1_ratio')
+            results['tl1_ratio'] = []
+        if 'tl2_ratio' not in metric_keys:
+            metric_keys.append('tl2_ratio')
+            results['tl2_ratio'] = []
+        if 'l1l2_ratio' not in metric_keys:
+            metric_keys.append('l1l2_ratio')
+            results['l1l2_ratio'] = []
+        results['tl1_ratio'].extend(tl1_ratio.cpu().numpy())
+        results['tl2_ratio'].extend(tl2_ratio.cpu().numpy())
+        results['l1l2_ratio'].extend((seg1>.5).sum(dim=(1,2,3,4)).float() / (seg2>.5).sum(dim=(1,2,3,4)).float().cpu().numpy())
+        
         key = 'to_ratio'
         if key not in results:
             results[key] = []
@@ -348,8 +350,7 @@ def main():
         organ_ratio = np.array(results['liver_ratio'][-len(seg1):])
         to_ratio = tumor_ratio / organ_ratio
         results[key].extend(np.where(to_ratio<1, 1/to_ratio, to_ratio)**2)
-
-                
+               
         del fixed, moving, warped, flows, agg_flows, affine_params
         # get mean of dice class
         results['dices'].extend(np.mean(dices, axis=0)) 
