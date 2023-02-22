@@ -45,7 +45,7 @@ parser.add_argument('--det', type=float, default=0.1, help="use det loss")
 parser.add_argument('--reg', type=float, default=1, help="use reg loss")
 parser.add_argument('-m', '--masked', choices=['soft', 'seg', 'hard'], default='',
      help="mask the tumor part when calculating similarity loss")
-parser.add_argument('-msk_thr', '--mask_threshold', type=float, default=2, help="volume changing threshold for mask")
+parser.add_argument('-mt', '--mask_threshold', type=float, default=2, help="volume changing threshold for mask")
 parser.add_argument('-mn', '--masked_neighbor', type=int, default=3, help="for masked neibor calculation")
 parser.add_argument('-vp', '--vol_preserve', type=float, default=0, help="use volume-preserving loss")
 parser.add_argument('-st', '--size_type', choices=['organ', 'tumor', 'tumor_gt', 'constant', 'dynamic', 'reg'], default='tumor', help = 'organ means VP works on whole organ, tumor means VP works on tumor region, tumor_gt means VP works on tumor region with ground truth, constant means VP ratio is a constant, dynamic means VP has dynamic weight, reg means VP is replaced by reg loss')
@@ -252,11 +252,19 @@ def main():
                         filter_nonorgan(flow_ratio, moving_mask)
                     globals().update(locals())
                     return flow_ratio
+                def remove_boundary_weights(fratio, mask, r=3):
+                    """ remove the weights near the boundary """
+                    boundary_region = find_surf(mask, 3)
+                    fratio[boundary_region] = 0
+                    return fratio
                 # find shrinking tumors
                 w_moving, w_moving_seg, rs1_flow = warp(fixed, moving, mask_moving, stage1_model)
                 target_ratio = (w_moving_seg>0.5).sum(dim=(2,3,4), keepdim=True).float() / (mask_moving>0.5).sum(dim=(2,3,4), keepdim=True).float()
                 ### better to calculate the ratio compared to the target ratio
                 flow_ratio = extract_tumor_mask(rs1_flow, w_moving_seg, n=args.masked_neighbor) * target_ratio
+                # is removing boundary really needed?
+                flow_ratio = remove_boundary_weights(flow_ratio, w_moving_seg)
+
                 # reverse it to input seg
                 # w_moving_rev_flow = cal_rev_flow_gpu(rs1_flow)
                 w_moving_rev_flow = stage1_model(moving, w_moving)[2][-1]
@@ -265,46 +273,53 @@ def main():
                 w_moving2, w_moving_seg2, rs1_flow2 = warp(fixed, w_moving, w_moving_seg, stage1_model)
                 target_ratio2 = (w_moving_seg2>0.5).sum(dim=(2,3,4), keepdim=True).float() / (w_moving_seg>0.5).sum(dim=(2,3,4), keepdim=True).float()
                 flow_ratio2 = extract_tumor_mask(rs1_flow2, w_moving_seg2, n=args.masked_neighbor) * target_ratio2
+                flow_ratio2 = remove_boundary_weights(flow_ratio2, w_moving_seg2)
                 # temporarily use fix->moving flow to solve this inversion 
                 # w_moving_rev_flow2 = cal_rev_flow_gpu(rs1_flow2)
                 w_moving_rev_flow2 = stage1_model(w_moving, w_moving2)[2][-1]
                 comp_flow2 = stage1_model.composite_flow(w_moving_rev_flow2, w_moving_rev_flow)
                 rev_flow_ratio2 = mmodel.reconstruction(flow_ratio2, comp_flow2)
-
-                # try to combine rev_flow and rev_flow2
                 
+                # try to combine rev_flow and rev_flow2
+
 
                 log_scalars['stage1_target_ratio'] = target_ratio.mean()
                 img_dict['stage1_revflowratio'] = visualize_3d(rev_flow_ratio[0,0])
                 img_dict['stage1_revflowratio2'] = visualize_3d(rev_flow_ratio2[0,0])
 
                 if args.masked=='soft':
+                    # temporarily increase tumor area to check if dynamic weights works
+                    # rev_flow_ratio2 = torch.maximum(((seg2>1.5).float() + rev_flow_ratio2)/2, rev_flow_ratio2)
                     # set up a functino to transfer flow_ratio to soft_mask for similarity (and possibly VP loss)
-                    sin_trsf_f = lambda x: torch.sin((x.clamp(1,2)-1.5)*2*(np.pi/2)) * 0.5 + 0.5 # the value should be between 0 and 1
+                    sin_trsf_f = lambda x: torch.sin(((x-1.5)/.5).clamp(-1,1)*(np.pi/2)) * 0.5 + 0.5 # the value should be between 0 and 1
                     # use (-5,5) interval of sigmoid to stimulate the desired transformation
-                    sigm_trsf_f = lambda x: torch.sigmoid((x-1.3)*20)
-                    trsf_f = sigm_trsf_f
+                    sigm_trsf_f = lambda x: torch.sigmoid((x-1.5)*5)
+                    trsf_f = sin_trsf_f
                     dynamic_mask = rev_flow_ratio2
                     # corresponds to the moving image
                     soft_mask = trsf_f(dynamic_mask) # intense value means the place is likely to be not similar to the fixed
+                    soft_mask = filter_nonorgan(soft_mask, mask_moving)
                     input_seg = soft_mask + mask_moving
                     img_dict['input_seg'] = visualize_3d(input_seg[0,0])
                     img_dict['soft_mask'] = visualize_3d(soft_mask[0,0])
-                    img_dict['soft_mask_on_seg2'] = visualize_3d(draw_seg_on_vol(soft_mask[0,0], 
+                    # should delete in real trainning, just to check the goodneess of rev1 and rev2
+                    rev_fratio = trsf_f(rev_flow_ratio)
+                    img_dict['rev1_mask_on_seg2'] = visualize_3d(draw_seg_on_vol(rev_fratio[0,0],
+                                                                                 seg2[0,0].round().long(),
+                                                                                 to_onehot=True))
+                    img_dict['stage1_mask_on_seg2'] = visualize_3d(draw_seg_on_vol(soft_mask[0,0], 
                                                                                  seg2[0,0].round().long(),
                                                                                  to_onehot=True))
                 elif args.masked=='hard':
                     # thres = torch.quantile(w_n, .9)
                     thres = args.mask_threshold
-                    hard_mask = flow_ratio > thres
+                    hard_mask = rev_flow_ratio2 > thres
                     with torch.no_grad():
                         warped_hard_mask = mmodel.reconstruction(hard_mask.float(), rs1_flow) > 0.5
                     input_seg = hard_mask + mask_moving
                     img_dict['input_seg'] = visualize_3d(input_seg[0,0])
-                    tum_on_wimg = draw_seg_on_vol(moving[0,0], hard_mask[0,0])
-                    org_on_wimg = draw_seg_on_vol(moving[0,0], mask_moving[0,0])
-                    writer.add_image('train/hard_tum_mask', visualize_3d(tum_on_wimg), epoch * len(train_loader) + iteration)
-                    writer.add_image('train/hard_org_mask', visualize_3d(org_on_wimg), epoch * len(train_loader) + iteration)
+                    hard_mask_onimg = draw_seg_on_vol(moving[0,0], input_seg[0,0].round().long(), to_onehot=True)
+                    img_dict['stage1_mask_on_seg2']= visualize_3d(hard_mask_onimg)
                 if args.debug:
                     # visualize w_moving, seg2, moving
                     save_dir = 'z_debug'
@@ -484,10 +499,13 @@ def main():
                 if args.w_ks_voxel>0:
                     # Notice!! It should be *ratio instead of /ratio
                     det_flow = (jacobian_det(agg_flows[-1], return_det=True).abs()*ratio).clamp(min=1/3, max=3)
+                    img_dict['det_flow'] = visualize_3d(det_flow[0])
+                    vp_seg = F.interpolate(w_seg2, size=det_flow.shape[-3:], mode='trilinear', align_corners=False).float().squeeze().round().long() # B, S, H, W
+                    img_dict['det_flow_on_seg2'] = visualize_3d(draw_seg_on_vol(det_flow[0], vp_seg[0], to_onehot=True))
                     vp_mask = F.interpolate(vp_tum_loc.float(), size=det_flow.shape[-3:], mode='trilinear', align_corners=False).float().squeeze() # B, S, H, W
                     if args.ks_norm=='voxel':
                         adet_flow = torch.where(det_flow>1, det_flow, (1/det_flow))
-                        k_sz_voxel = (adet_flow*vp_mask).mean()
+                        k_sz_voxel = (adet_flow*vp_mask).sum()/vp_mask.sum()
                         img_dict['vp_det_flow'] = visualize_3d(adet_flow[0])
                     elif args.ks_norm=='image':
                         # normalize loss for every image
