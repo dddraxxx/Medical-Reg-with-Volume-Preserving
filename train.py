@@ -472,7 +472,6 @@ def main():
                             if args.masked=='seg':
                                 moving_ = torch.cat([moving, seg2], dim=1)
                             elif args.masked in ['soft', 'hard']:
-                                import pdb; pdb.set_trace()
                                 input_seg, compute_mask = model.pre_register(fixed, moving, seg2, training=False, cfg=args)
                                 moving_ = torch.cat([moving, input_seg], dim=1)
                             else:
@@ -505,7 +504,6 @@ def main():
                         tb_imgs['seg1'] = data['segmentation1']
                         tb_imgs['seg2'] = data['segmentation2']
                         tb_imgs['w_seg2'] = w_seg2
-                    import pdb; pdb.set_trace()
 
                     mean_val_loss = val_epoch_loss / len(val_loader)
                     print(f"Mean val loss: {mean_val_loss}")

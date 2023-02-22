@@ -1,6 +1,8 @@
+import torchvision.transforms as tf
 import torch
 import torch.nn as nn
 from tools.utils import *
+from tools.visualization import plot_to_PIL
 import os
 from metrics.losses import jacobian_det
 
@@ -60,17 +62,23 @@ class PreRegister(nn.Module):
             return flow_ratio
         def remove_boundary_weights(fratio, mask, r=3):
             """ remove the weights near the boundary """
-            boundary_region = find_surf(mask, 3)
+            boundary_region = find_surf(mask, 3, thres=.5)
+            if cfg.training:
+                im = combo_imgs(boundary_region.float()[0,0], fratio[0,0])
+                img_dict['before_boundary'] = tf.ToTensor()(im)
             fratio[boundary_region] = 0
+            ### is removing boundary really needed?
+            # check the boundary region
+            # import pdb; pdb.set_trace()
+            # combo_imgs(w_moving2[0,0], w_moving_seg2[0,0], boundary_region[0,0].float()).save('1.png')
             return fratio
         # find shrinking tumors
         w_moving, w_moving_seg, rs1_flow = warp(fixed, moving, mask_moving, stage1_model)
         target_ratio = (w_moving_seg>0.5).sum(dim=(2,3,4), keepdim=True).float() / (mask_moving>0.5).sum(dim=(2,3,4), keepdim=True).float()
+
         ### better to calculate the ratio compared to the target ratio
         flow_ratio = extract_tumor_mask(rs1_flow, w_moving_seg, n=cfg.masked_neighbor) * target_ratio
-        # is removing boundary really needed?
         flow_ratio = remove_boundary_weights(flow_ratio, w_moving_seg)
-
         # reverse it to input seg
         # w_moving_rev_flow = cal_rev_flow_gpu(rs1_flow)
         w_moving_rev_flow = stage1_model(moving, w_moving)[2][-1]
@@ -80,18 +88,39 @@ class PreRegister(nn.Module):
         target_ratio2 = (w_moving_seg2>0.5).sum(dim=(2,3,4), keepdim=True).float() / (w_moving_seg>0.5).sum(dim=(2,3,4), keepdim=True).float()
         flow_ratio2 = extract_tumor_mask(rs1_flow2, w_moving_seg2, n=cfg.masked_neighbor) * target_ratio2
         flow_ratio2 = remove_boundary_weights(flow_ratio2, w_moving_seg2)
+
+        #####
+        ### will it be better to use the mask of aggregated mask? thought that would be minor though
+        #####
+
         # temporarily use fix->moving flow to solve this inversion 
+        ### will it cause the shrinking of tumor?
         # w_moving_rev_flow2 = cal_rev_flow_gpu(rs1_flow2)
         w_moving_rev_flow2 = stage1_model(w_moving, w_moving2)[2][-1]
         comp_flow2 = stage1_model.composite_flow(w_moving_rev_flow2, w_moving_rev_flow)
         rev_flow_ratio2 = stage1_model.reconstruction(flow_ratio2, comp_flow2)
         
-        # try to combine rev_flow and rev_flow2
+        # TODO: try to combine rev_flow and rev_flow2?
 
         if training:
             log_scalars['stage1_target_ratio'] = target_ratio.mean()
             img_dict['stage1_revflowratio'] = visualize_3d(rev_flow_ratio[0,0])
             img_dict['stage1_revflowratio2'] = visualize_3d(rev_flow_ratio2[0,0])
+            #### Try to test the effect of rev_flow calculation, and using 2-stage flow instead of 1-stage flow
+            # w_moving_gt = stage1_model.reconstruction(seg2, rs1_flow)
+            # w_moving2_gt = stage1_model.reconstruction(seg2, rs1_flow2)
+            # rev_w_moving_gt = stage1_model.reconstruction(seg2, w_moving_rev_flow)
+            # rev_w_moving2_gt = stage1_model.reconstruction(seg2, w_moving_rev_flow2)
+            # # try to alpha_composite the two images
+            # from matplotlib import pyplot as plt
+            # a =  img_dict['stage1_revflowratio'].cpu()[0]
+            # b = img_dict['stage1_revflowratio2'].cpu()[0]
+            # plt.imshow(a, cmap='Greens', alpha=1)
+            # plt.imshow(b, cmap='Reds', alpha=0.5)
+            # im = plot_to_PIL()
+            # im.save('1.png')
+            # import ipdb; ipdb.set_trace()
+            ####
 
         if cfg.masked=='soft':
             # temporarily increase tumor area to check if dynamic weights works
@@ -107,11 +136,11 @@ class PreRegister(nn.Module):
             soft_mask = trsf_f(dynamic_mask) # intense value means the place is likely to be not similar to the fixed
             soft_mask = filter_nonorgan(soft_mask, mask_moving)
             input_seg = soft_mask + mask_moving
-            # should delete in real trainning, just to check the goodneess of rev1 and rev2
-            rev_fratio = trsf_f(rev_flow_ratio)
             if training:
                 img_dict['input_seg'] = visualize_3d(input_seg[0,0])
                 img_dict['soft_mask'] = visualize_3d(soft_mask[0,0])
+                # should delete in real trainning, just to check the goodneess of rev1 and rev2
+                rev_fratio = trsf_f(rev_flow_ratio)
                 img_dict['rev1_mask_on_seg2'] = visualize_3d(draw_seg_on_vol(rev_fratio[0,0],
                                                                             seg2[0,0].round().long(),
                                                                             to_onehot=True))
@@ -180,10 +209,10 @@ class PreRegister(nn.Module):
             combo_imgs(*flow_ratio[:,0]).save(f'{save_dir}/flow_ratio.jpg')
             # combo_imgs(*hard_mask[:,0]).save(f'{save_dir}/hard_mask.jpg')
             # import debugpy; debugpy.listen(5678); print('Waiting for debugger attach'); debugpy.wait_for_client(); debugpy.breakpoint()
-            if training:
-                return *returns, log_scalars, img_dict
-            else:
-                return returns
+        if training:
+            return *returns, log_scalars, img_dict
+        else:
+            return returns
 
 
 
@@ -200,4 +229,3 @@ class PreRegister(nn.Module):
         s1_flow = s1_agg_flows[-1]
         w_template_seg = stage1_model.reconstruction(template_seg.expand_as(template_input), s1_flow)
         return w_template_seg
-
