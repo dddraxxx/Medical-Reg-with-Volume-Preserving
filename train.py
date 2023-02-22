@@ -35,6 +35,7 @@ parser.add_argument('--fixed_sample', type=int, default=100)
 parser.add_argument('-g', '--gpu', type=str, default='', help='GPU to use')
 parser.add_argument('-d', '--dataset', type=str, default='datasets/liver_cust.json', help='Specifies a data config')
 parser.add_argument("-ts", "--training_scheme", type=lambda x:int(x) if x.isdigit() else x, default='', help='Specifies a training scheme')
+parser.add_argument('-vs', '--val_scheme', type=lambda x:int(x) if x.isdigit() else x, default='', help='Specifies a validation scheme')
 parser.add_argument('-aug', '--augment', default=True, type=lambda x: x.lower() in ['true', '1', 't', 'y', 'yes'], help='Augment data')
 parser.add_argument('--lr', type=float, default=1e-4)
 parser.add_argument('--lr_scheduler', default = 'step', type=str, help='lr scheduler', choices=['linear', 'step', 'cosine'])
@@ -116,7 +117,8 @@ def main():
             import shutil
             shutil.copyfile(os.path.realpath(__file__), log_dir+'/training_code.py')
     if args.debug:
-        torch.autograd.set_detect_anomaly(True)
+        # torch.autograd.set_detect_anomaly(True)
+        pass
 
     # read config
     with open(args.dataset, 'r') as f:
@@ -126,7 +128,7 @@ def main():
         segmentation_class_value=cfg.get('segmentation_class_value', {'unknown':1})
 
     train_scheme = args.training_scheme or Split.TRAIN
-    val_scheme = Split.VALID
+    val_scheme = args.val_scheme or Split.VALID
     print('Train', train_scheme)
     print('Val', val_scheme)
     train_dataset = Data(args.dataset, rounds=args.round*args.batch_size, scheme=train_scheme)
@@ -223,166 +225,9 @@ def main():
             
             # computed mask: generate mask for tumor region according to flow
             if args.masked in ['soft', 'hard']:
-                def pre_compute_mask(self, fixed, moving, seg2):
-                    """ Compute mask for tumor region """
-                    stage1_model = self.RCN
-                    template_input = self.template_input
-                    template_seg = self.template_seg
-                    with torch.no_grad():
-                        stage1_inputs = torch.cat([fixed, moving], dim=0)
-                        template_input = template_image.expand_as(stage1_inputs)
-                        # achieve organ mask via regristration
-                        w_template, _, s1_agg_flows = stage1_model(stage1_inputs, template_input, return_neg=args.stage1_rev)
-                        s1_flow = s1_agg_flows[-1]
-                        w_template_seg = stage1_model.reconstruction(template_seg.expand_as(template_input), s1_flow)
-                        mask_fixing = w_template_seg[:fixed.shape[0]]
-                        mask_moving = w_template_seg[fixed.shape[0]:]
-                    def warp(fixed, moving, seg, reg_model):
-                        """ Warp moving image to fixed image, and return warped seg """
-                        with torch.no_grad():
-                            w_moving, _, rs1_agg_flows = reg_model(fixed, moving)
-                            w_seg = reg_model.reconstruction(seg, rs1_agg_flows[-1])
-                        return w_moving[-1], w_seg, rs1_agg_flows[-1]
-                    def filter_nonorgan(x, seg):
-                        x[~(seg>0.5)] = 0
-                        return x
-                    def extract_tumor_mask(stage1_moving_flow, moving_mask, n=1, thres=3):
-                        flow_det_moving = jacobian_det(stage1_moving_flow, return_det=True)
-                        flow_det_moving = flow_det_moving.unsqueeze(1).abs()
-                        if args.stage1_rev: flow_ratio = 1/flow_det_moving
-                        else: flow_ratio = flow_det_moving
-                        # get n x n neighbors 
-                        flow_ratio = flow_ratio.clamp(1/thres,thres)
-                        sizes = F.interpolate(flow_ratio, size=fixed.shape[-3:], mode='trilinear', align_corners=False) \
-                            if flow_ratio.shape[-3:]!=fixed.shape[-3:] else flow_ratio
-                        flow_ratio = F.avg_pool3d(sizes, kernel_size=n, stride=1, padding=n//2)
-                        if moving_mask is not None:
-                            filter_nonorgan(flow_ratio, moving_mask)
-                        globals().update(locals())
-                        return flow_ratio
-                    def remove_boundary_weights(fratio, mask, r=3):
-                        """ remove the weights near the boundary """
-                        boundary_region = find_surf(mask, 3)
-                        fratio[boundary_region] = 0
-                        return fratio
-                    # find shrinking tumors
-                    w_moving, w_moving_seg, rs1_flow = warp(fixed, moving, mask_moving, stage1_model)
-                    target_ratio = (w_moving_seg>0.5).sum(dim=(2,3,4), keepdim=True).float() / (mask_moving>0.5).sum(dim=(2,3,4), keepdim=True).float()
-                    ### better to calculate the ratio compared to the target ratio
-                    flow_ratio = extract_tumor_mask(rs1_flow, w_moving_seg, n=args.masked_neighbor) * target_ratio
-                    # is removing boundary really needed?
-                    flow_ratio = remove_boundary_weights(flow_ratio, w_moving_seg)
-
-                    # reverse it to input seg
-                    # w_moving_rev_flow = cal_rev_flow_gpu(rs1_flow)
-                    w_moving_rev_flow = stage1_model(moving, w_moving)[2][-1]
-                    rev_flow_ratio = mmodel.reconstruction(flow_ratio, w_moving_rev_flow)
-                    # do the same for second stage1 registration
-                    w_moving2, w_moving_seg2, rs1_flow2 = warp(fixed, w_moving, w_moving_seg, stage1_model)
-                    target_ratio2 = (w_moving_seg2>0.5).sum(dim=(2,3,4), keepdim=True).float() / (w_moving_seg>0.5).sum(dim=(2,3,4), keepdim=True).float()
-                    flow_ratio2 = extract_tumor_mask(rs1_flow2, w_moving_seg2, n=args.masked_neighbor) * target_ratio2
-                    flow_ratio2 = remove_boundary_weights(flow_ratio2, w_moving_seg2)
-                    # temporarily use fix->moving flow to solve this inversion 
-                    # w_moving_rev_flow2 = cal_rev_flow_gpu(rs1_flow2)
-                    w_moving_rev_flow2 = stage1_model(w_moving, w_moving2)[2][-1]
-                    comp_flow2 = stage1_model.composite_flow(w_moving_rev_flow2, w_moving_rev_flow)
-                    rev_flow_ratio2 = mmodel.reconstruction(flow_ratio2, comp_flow2)
-                    
-                    # try to combine rev_flow and rev_flow2
-
-
-                    log_scalars['stage1_target_ratio'] = target_ratio.mean()
-                    img_dict['stage1_revflowratio'] = visualize_3d(rev_flow_ratio[0,0])
-                    img_dict['stage1_revflowratio2'] = visualize_3d(rev_flow_ratio2[0,0])
-
-                    if args.masked=='soft':
-                        # temporarily increase tumor area to check if dynamic weights works
-                        # rev_flow_ratio2 = torch.maximum(((seg2>1.5).float() + rev_flow_ratio2)/2, rev_flow_ratio2)
-                        # set up a functino to transfer flow_ratio to soft_mask for similarity (and possibly VP loss)
-                        sin_trsf_f = lambda x: torch.sin(((x-1.5)/.5).clamp(-1,1)*(np.pi/2)) * 0.5 + 0.5 # the value should be between 0 and 1
-                        # use (-5,5) interval of sigmoid to stimulate the desired transformation
-                        sigm_trsf_f = lambda x: torch.sigmoid((x-1.5)*5)
-                        trsf_f = sin_trsf_f
-                        trsf_f = sigm_trsf_f
-                        dynamic_mask = rev_flow_ratio2
-                        # corresponds to the moving image
-                        soft_mask = trsf_f(dynamic_mask) # intense value means the place is likely to be not similar to the fixed
-                        soft_mask = filter_nonorgan(soft_mask, mask_moving)
-                        input_seg = soft_mask + mask_moving
-                        img_dict['input_seg'] = visualize_3d(input_seg[0,0])
-                        img_dict['soft_mask'] = visualize_3d(soft_mask[0,0])
-                        # should delete in real trainning, just to check the goodneess of rev1 and rev2
-                        rev_fratio = trsf_f(rev_flow_ratio)
-                        img_dict['rev1_mask_on_seg2'] = visualize_3d(draw_seg_on_vol(rev_fratio[0,0],
-                                                                                    seg2[0,0].round().long(),
-                                                                                    to_onehot=True))
-                        img_dict['stage1_mask_on_seg2'] = visualize_3d(draw_seg_on_vol(soft_mask[0,0], 
-                                                                                    seg2[0,0].round().long(),
-                                                                                    to_onehot=True))
-                        returns = (input_seg, soft_mask)
-                    elif args.masked=='hard':
-                        # thres = torch.quantile(w_n, .9)
-                        thres = args.mask_threshold
-                        hard_mask = rev_flow_ratio2 > thres
-                        input_seg = hard_mask + mask_moving
-                        img_dict['input_seg'] = visualize_3d(input_seg[0,0])
-                        hard_mask_onimg = draw_seg_on_vol(moving[0,0], input_seg[0,0].round().long(), to_onehot=True)
-                        img_dict['stage1_mask_on_seg2']= visualize_3d(hard_mask_onimg)
-                        returns = (input_seg, hard_mask)
-
-                    if args.debug:
-                        # visualize w_moving, seg2, moving
-                        save_dir = 'z_debug'
-                        if not os.path.exists(save_dir): os.makedirs(save_dir)
-                        combo_imgs(*w_moving[:,0]).save(f'{save_dir}/w_moving.jpg')
-                        with torch.no_grad():
-                            # check the results of stage1 model on fixed-moving-registration
-                            _, _, ss1ag_flows = stage1_model(fixed, moving)
-                            wwseg2 = stage1_model.reconstruction(seg2, ss1ag_flows[-1])
-                            w1_seg2 = stage1_model.reconstruction(seg2, rs1_flow)
-                            w2_moving, _, rs2_agg_flows = stage1_model(template_input[:fixed.shape[0]], w_moving)
-                            w2_seg2 = stage1_model.reconstruction(w1_seg2, rs2_agg_flows[-1])
-                            flow_ratio2 = extract_tumor_mask(rs2_agg_flows[-1], w2_seg2)
-                            w3_moving, _, rs3_agg_flows = stage1_model(template_input[:fixed.shape[0]], w2_moving[-1])
-                            w3_seg2 = stage1_model.reconstruction(w2_seg2, rs3_agg_flows[-1])
-                            flow_ratio3 = extract_tumor_mask(rs3_agg_flows[-1], w3_seg2)
-                            # find the area ranked by dissimilarity
-                        def dissimilarity(x, y):
-                            x_mean = x-x.mean(dim=(1,2,3,4), keepdim=True)
-                            y_mean = y-y.mean(dim=(1,2,3,4), keepdim=True)
-                            correlation = x_mean*y_mean
-                            return -correlation
-                        def dissimilarity_mask(x, y, mask):
-                            x_mean = (x*mask).sum(dim=(1,2,3,4), keepdim=True)/mask.sum(dim=(1,2,3,4), keepdim=True)
-                            y_mean = (y*mask).sum(dim=(1,2,3,4), keepdim=True)/mask.sum(dim=(1,2,3,4), keepdim=True)
-                            x_ = x-x_mean
-                            y_ = y-y_mean
-                            correlation = x_*y_
-                            correlation[~mask] = correlation[mask].median()
-                            return -correlation
-                        # dissimilarity_moving = dissimilarity_mask(template_input[:fixed.shape[0]], w_moving[-1], w1_seg2>.5)
-                        # dissimilarity_moving2 = dissimilarity_mask(template_input[:fixed.shape[0]], w2_moving[-1], w2_seg2>.5)
-                        # combo_imgs(*dissimilarity_moving[:,0]).save(f'{save_dir}/dissimilarity_moving.jpg')
-                        # combo_imgs(*dissimilarity_moving2[:, 0]).save(f"{save_dir}/dissimilarity_moving2.jpg")
-                        # what if we use the second stage flow?
-                        combo_imgs(*w2_moving[-1][:,0]).save(f'{save_dir}/w2_moving.jpg')
-                        combo_imgs(*flow_ratio2[:,0]).save(f'{save_dir}/flow_ratio2.jpg')
-                        # or the third stage flow?
-                        combo_imgs(*w3_moving[-1][:,0]).save(f'{save_dir}/w3_moving.jpg')
-                        combo_imgs(*flow_ratio3[:,0]).save(f'{save_dir}/flow_ratio3.jpg')
-                        combo_imgs(*w_template[-1][[1,2,5,6],0]).save(f'{save_dir}/w_template.jpg')
-                        combo_imgs(*w_template_seg[:,0]).save(f'{save_dir}/w_template_seg.jpg')
-                        combo_imgs(*wwseg2[:,0]).save(f'{save_dir}/wwseg2.jpg')
-                        combo_imgs(*mask_fixing[:,0]).save(f'{save_dir}/mask_fixing.jpg')
-                        combo_imgs(*mask_moving[:,0]).save(f'{save_dir}/mask_moving.jpg')
-                        combo_imgs(*moving[:,0]).save(f'{save_dir}/moving.jpg')
-                        combo_imgs(*seg2[:,0]).save(f'{save_dir}/seg2.jpg')
-                        combo_imgs(*flow_ratio[:,0]).save(f'{save_dir}/flow_ratio.jpg')
-                        # combo_imgs(*hard_mask[:,0]).save(f'{save_dir}/hard_mask.jpg')
-                        # import debugpy; debugpy.listen(5678); print('Waiting for debugger attach'); debugpy.wait_for_client(); debugpy.breakpoint()
-
-                        return returns
-                input_seg, compute_mask = pre_compute_mask(model.pre_register, fixed, moving, seg2)
+               input_seg, compute_mask, ls, idct = model.pre_register(fixed, moving, seg2, training=True, cfg=args)
+               log_scalars.update(ls)
+               img_dict.update(idct)
             if args.masked=='seg': input_seg = seg2.float()
             
             if args.in_channel==3:
@@ -617,7 +462,7 @@ def main():
                     tb_imgs = {}
                     for itern, data in enumerate(val_loader):
                         itern += 1
-                        if itern % int(0.33 * len(val_loader)) == 0:
+                        if len(val_loader)>3 and itern % int(0.33 * len(val_loader)) == 0:
                             print(f"\t-----Iteration {itern} / {len(val_loader)} -----")
                         with torch.no_grad():
                             fixed, moving = data['voxel1'], data['voxel2']
@@ -627,7 +472,8 @@ def main():
                             if args.masked=='seg':
                                 moving_ = torch.cat([moving, seg2], dim=1)
                             elif args.masked in ['soft', 'hard']:
-                                input_seg, compute_mask = pre_compute_mask(model.pre_register, fixed, moving, seg2)
+                                import pdb; pdb.set_trace()
+                                input_seg, compute_mask = model.pre_register(fixed, moving, seg2, training=False, cfg=args)
                                 moving_ = torch.cat([moving, input_seg], dim=1)
                             else:
                                 moving_ = moving
@@ -659,6 +505,7 @@ def main():
                         tb_imgs['seg1'] = data['segmentation1']
                         tb_imgs['seg2'] = data['segmentation2']
                         tb_imgs['w_seg2'] = w_seg2
+                    import pdb; pdb.set_trace()
 
                     mean_val_loss = val_epoch_loss / len(val_loader)
                     print(f"Mean val loss: {mean_val_loss}")
