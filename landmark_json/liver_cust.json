@@ -53,11 +53,17 @@
     "2": {
       "slits-val": 1.0
     },
+    "3": {
+      "tumor-train":1.0
+    },
     "lmk-val":{
       "lmk-val": 1.0
     },
-    "mini-val": {
-      "mini-val": 1.0
+    "mini": {
+      "mini-worse": 1.0
+    },
+    "mini-hard":{
+      "mini-better": 1.0
     },
     "lits-mini": {
       "lits-mini": 1.0
@@ -73,6 +79,9 @@
     },
     "lits-d": {
       "lits_d": 1.0
+    },
+    "lits-p": {
+      "lits_paste_tumor": 1.0
     }
   },
   "subsets": {
@@ -1103,10 +1112,24 @@
       "pancreas/98",
       "pancreas/99"
     ],
-    "lits_d": [
-      "lits_d/106",
-      "lits_d/119",
-      "lits/51"
+    "mini-better":[
+      ["yanx/14","lits/51"]
+    ],
+    "mini-worse":[
+      ["lits/51", "lits/33"] 
+    ],
+    "mini-hard":[
+      ["lits/115", "lits/33"]
+    ],
+    "tumor-train":[
+      "lits/91",
+      "lits/128",
+      "lits/82",
+      "lits/72",
+      "lits/21"
+    ],
+    "lits_paste_tumor": [
+      "lits_p/*"
     ],
     "lmk-val":[
       "lits/53",
@@ -1115,17 +1138,6 @@
       "lits/128",
       "lits/84",
       "lits/92"
-    ],
-    "lits-mini":[
-      "lits/115",
-      "lits/128"
-    ],
-    "mini-val": [
-      "lits/84",
-      "lits/40",
-      "yanx/20",
-      "yanx/14",
-      "yanx/9"
     ],
     "slits-val": [
       "lits/106",
