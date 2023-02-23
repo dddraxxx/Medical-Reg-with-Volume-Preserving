@@ -82,24 +82,6 @@ class RecursiveCascadeNetwork(nn.Module):
                     param = param.data
                 own_state[name].copy_(param)
         self.stems.load_state_dict = load_state_dict.__get__(self.stems, nn.ModuleList)
-        def train(self, mode=True):
-            """Sets the module in training mode.
-            This has any effect only on certain modules. See documentations of
-            particular modules for details of their behaviors in training/evaluation
-            mode.
-
-            Args:
-                mode (bool): whether to set training mode (``True``) or evaluation
-                    mode (``False``)
-
-            Modified: Use pre-register module to compute mask if self has pre_register attribute
-            """
-            # compute mask if self has pre_register attribute
-            self.compute_mask = not mode if getattr(self, 'pre_register', None) else False
-            self.training = mode
-            for module in self.children():
-                module.train(mode)
-        self.train = train.__get__(self, nn.Module)
     
     def build_stage1_model(self):
         """
@@ -122,9 +104,10 @@ class RecursiveCascadeNetwork(nn.Module):
         return self.pre_register
 
     def forward(self, fixed, moving, return_affine=False, return_neg=False):
-        if self.compute_mask:
-            moving_seg = self.pre_register(moving)
-            moving = torch.cat([moving, moving_seg], dim=1)
+        # think about how to migrate the pre-computing into the model
+        # if self.compute_mask:
+        #     moving_seg = self.pre_register(moving)
+        #     moving = torch.cat([moving, moving_seg], dim=1)
         flows = []
         stem_results = []
         agg_flows = []
