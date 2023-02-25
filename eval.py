@@ -14,6 +14,7 @@ import torch
 from metrics.surface_distance import *
 from networks.recursive_cascade_networks import RecursiveCascadeNetwork
 from data_util.dataset import Data, Split
+from tools.utils import *
 
 parser = argparse.ArgumentParser()
 parser.add_argument('-c', '--checkpoint', type=str, default=None,
@@ -44,6 +45,7 @@ parser.add_argument('-rd', '--region_dice', default=True, type=lambda x: x.lower
 parser.add_argument('-sd', '--surf_dist', default=True, type=lambda x: x.lower() in ['true', '1', 't', 'y', 'yes'], help='If calculate dist for each surface')
 parser.add_argument('-mt', '--masked_type', type=str, default='seg', help='masked type')
 parser.add_argument('-only_vis', '--only_vis_target', action='store_true', help='If only visualize target')
+parser.add_argument('--use_ants', action='store_true', help='if use ants to register')
 args = parser.parse_args()
 if args.checkpoint == 'normal':
     args.checkpoint = '/home/hynx/regis/recursive-cascaded-networks/logs/Dec27_133859_normal/model_wts'
@@ -126,20 +128,28 @@ def main():
                 
         fixed, moving = data['voxel1'], data['voxel2']
         id1, id2 = data['id1'], data['id2']
-        with torch.no_grad():
-            fixed = fixed.cuda()
-            moving = moving.cuda()
-            if args.masked and args.masked_type =='seg':
-                moving_ = torch.cat([moving, seg2.float().cuda()], dim=1)
-            else:
-                moving_ = moving
-            warped_, flows, agg_flows, affine_params = model(fixed, moving_, return_affine=True, return_neg=args.reverse)
-            warped = [i[:,:1,...] for i in warped_]
-            if args.masked:
-                w_seg2 = warped_[-1][:, 1:]
-            else:
+        if args.use_ants:
+            import ants
+            warps = []
+            for i in range(fixed.shape[0]):
+                im_fixed = ants.from_numpy(fixed.cpu().numpy()[i,0])
+                im_moving = ants.from_numpy(moving.cpu().numpy()[i,0])
+                reg = ants.registration(fixed=im_fixed, moving=im_moving, type_of_transform='SyN')
+                warped = ants.apply_transforms(fixed=im_fixed, moving=im_moving, transformlist=reg['fwdtransforms'])
+                warps.append(warped.numpy())
+            warped = np.array(warps)[:,None]
+        else:
+            with torch.no_grad():
+                fixed = fixed.cuda()
+                moving = moving.cuda()
+                if args.masked and args.masked_type =='seg':
+                    moving_ = torch.cat([moving, seg2.float().cuda()], dim=1)
+                else:
+                    moving_ = moving
+                warped_, flows, agg_flows, affine_params = model(fixed, moving_, return_affine=True, return_neg=args.reverse)
+                warped = [i[:,:1,...] for i in warped_]
                 w_seg2 = model.reconstruction(seg2.float().cuda(), agg_flows[-1].float())
-        
+            
         if args.save_pkl:
             magg_flows = torch.stack(agg_flows).transpose(0,1).detach().cpu()
             if args.reverse:
@@ -343,13 +353,14 @@ def main():
         results['l1l2_ratio'].extend((seg1>.5).sum(dim=(1,2,3,4)).float() / (seg2>.5).sum(dim=(1,2,3,4)).float().cpu().numpy())
         
         key = 'to_ratio'
-        if key not in results:
-            results[key] = []
-            metric_keys.append(key)
-        tumor_ratio = np.array(results['tumor_ratio'][-len(seg1):])
-        organ_ratio = np.array(results['liver_ratio'][-len(seg1):])
-        to_ratio = tumor_ratio / organ_ratio
-        results[key].extend(np.where(to_ratio<1, 1/to_ratio, to_ratio)**2)
+        if 'tumor_ratio'  in results and 'liver_ratio' in results:
+            if key not in results:
+                results[key] = []
+                metric_keys.append(key)
+            tumor_ratio = np.array(results['tumor_ratio'][-len(seg1):])
+            organ_ratio = np.array(results['liver_ratio'][-len(seg1):])
+            to_ratio = tumor_ratio / organ_ratio
+            results[key].extend(np.where(to_ratio<1, 1/to_ratio, to_ratio)**2)
                
         del fixed, moving, warped, flows, agg_flows, affine_params
         # get mean of dice class

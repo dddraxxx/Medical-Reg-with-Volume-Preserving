@@ -8,3 +8,5 @@ evaluations/*
 .ipynb_checkpoints
 eval_excel/
 datasets
+tools/extensions/
+wandb/
