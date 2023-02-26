@@ -101,14 +101,6 @@ def crop(seg, bbox, pad=5):
     bbox[5] += pad
     return seg[bbox[0]:bbox[3]+1, bbox[1]:bbox[4]+1, bbox[2]:bbox[5]+1]
 
-# resize seg
-def resize_data(data, size, is_seg=False):
-    # resize 
-    data = resample_data_or_seg(data[None], [s for s in size], is_seg=is_seg)[0]
-    # pad seg by 5 each side
-    # data = np.pad(data, ((5, 5), (5, 5), (5, 5)), 'constant', constant_values=0)
-    return data
-
 def find_no_tumor_h5(h5_path):
     with h5py.File(h5_path, 'r') as f:
         tumour_sum = []
@@ -223,14 +215,16 @@ def visual_nii(id, path = '/mnt/sdc/lits/train'):
     im = make_grid_pil(cl_img_x, cl_img_y, cl_img_z, img_x, img_y, img_z, padding=5)
     im.save(f'images/{id}_grid.jpg')
 
+def resize_data(data, shape, is_seg=False):
+    if is_seg:
+        data = resize(data, shape, order=0, preserve_range=True, anti_aliasing=False)
+    else:
+        data = resize(data, shape, order=3, preserve_range=True, anti_aliasing=False, mode='edge')
+    return data
+
 # assign seg according to group id/segmentation in hdf5 file
 def store_segs(h5_path, selected=np.s_[:]):
-    def resize_data(data, shape, is_seg=False):
-        if is_seg:
-            data = resize(data, shape, order=0, preserve_range=True, anti_aliasing=False)
-        else:
-            data = resize(data, shape, order=3, preserve_range=True, anti_aliasing=False, mode='edge')
-        return data
+
     ids = range(131)
     # create h5 and put data and seg in it
     with h5py.File(h5_path, 'w') as f:
