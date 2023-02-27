@@ -57,13 +57,21 @@ parser.add_argument('-inv', '--invert_loss', action='store_true', help="invertib
 parser.add_argument('--surf_loss', default=0, type=float, help='Surface loss weight')
 parser.add_argument('-dc', '--dice_loss', default=0, type=float, help='Dice loss weight')
 parser.add_argument('-ic', '--in_channel', default=2, type=int, help='Input channel number')
+parser.add_argument('-trsf', '--soft_transform', default='sigm', type=str, help='Soft transform')
+parser.add_argument('-bnd_thick', '--boundary_thickness', default=0, type=float, help='Boundary thickness')
+parser.add_argument('-use2', '--use_2nd_flow', default=False, type=lambda x: x.lower() in ['true', '1', 't', 'y', 'yes'], help='Use 2nd flow')
 # mask calculation needs an extra mask as input
 parser.set_defaults(in_channel=3 if parser.parse_args().masked else 2)
 
 
 args = parser.parse_args()
-if args.gpu:
-    os.environ["CUDA_VISIBLE_DEVICES"] = args.gpu
+# if args.gpu:
+#     os.environ["CUDA_VISIBLE_DEVICES"] = args.gpu
+# set gpu to the one with most free memory
+import subprocess
+GPU_ID = subprocess.getoutput('nvidia-smi --query-gpu=memory.free --format=csv,nounits,noheader | nl -v 0 | sort -nrk 2 | cut -f 1| head -n 1 | xargs')
+print('Using GPU', GPU_ID)
+os.environ['CUDA_VISIBLE_DEVICES'] = GPU_ID
 
 def reduce_mean(tensor):
     if dist.is_initialized():
@@ -86,20 +94,19 @@ def main():
     run_id = dt.strftime('%b%d_%H%M%S') + (args.name and '_' + args.name)
 
     ckp_freq = int(args.checkpoint_frequency * args.round)
-
-    # if not os.path.exists('./ckp/visualization'):
-    #     print("Creating visualization dir")
-    #     os.makedirs('./ckp/visualization')
+    data_type = 'liver' if 'liver' in args.dataset else 'brain'
 
     # mkdirs for log and Tensorboard
     if not args.debug:
         if not args.ctt:
+            ### TODO: Add the wandb logger
+            # wandb.init(project='RCN', config=args, sync_tensorboard=True)
             print("Creating log dir")
-            log_dir = os.path.join('./logs', run_id)
+            log_dir = os.path.join('./logs', data_type, run_id)
             os.path.exists(log_dir) or os.makedirs(log_dir)
             writer = SummaryWriter(log_dir=log_dir)
             if not os.path.exists(log_dir+'/model_wts/'):
-                print("Creating ckp dir")
+                print("Creating ckp dir", log_dir)
                 os.makedirs(log_dir+'/model_wts/')
                 ckp_dir = log_dir+'/model_wts/'
         else:
@@ -137,11 +144,22 @@ def main():
     in_channels = args.in_channel
     model = RecursiveCascadeNetwork(n_cascades=args.n_cascades, im_size=image_size, base_network=args.base_network, in_channels=in_channels, compute_mask=False).cuda()
     if args.masked in ['soft', 'hard']:
-        template = list(train_dataset.subset['slits-temp'].values())[0]
+        template = list(train_dataset.subset['temp'].values())[0]
         template_image, template_seg = template['volume'], template['segmentation']
         template_image = torch.tensor(np.array(template_image).astype(np.float32)).unsqueeze(0).unsqueeze(0).cuda()/255.0
         template_seg = torch.tensor(np.array(template_seg).astype(np.float32)).unsqueeze(0).unsqueeze(0).cuda()
-        stage1_model = model.build_preregister(template_image, template_seg).RCN.cuda()
+        if data_type == 'liver':
+            if args.base_network == 'VTN':
+                state_path = '/home/hynx/regis/recursive-cascaded-networks/logs/Jan08_180325_normal-vtn'
+            elif args.base_network == 'VXM':
+                # state_path = '/home/hynx/regis/recursive-cascaded-networks/logs/Jan08_180325_normal-vtn'
+                state_path = '/home/hynx/regis/recursive-cascaded-networks/logs/Jan08_175614_normal-vxm'
+        elif data_type == 'brain':
+            if args.base_network == 'VTN':
+                state_path = '/home/hynx/regis/recursive-cascaded-networks/logs/brain/Feb27_034554_br-normal'
+            elif args.base_network == 'VXM':
+                state_path = ''
+        model.build_preregister(template_image, template_seg, state_path, args.base_network)
 
     # add checkpoint loading
     start_epoch = 0
@@ -200,6 +218,8 @@ def main():
         vis_batch = []
         t0 = default_timer()
         for iteration, data in enumerate(train_loader, start=start_iter):
+            # torch clear cache
+            # torch.cuda.empty_cache()
             # if start_iter is not 0, the 'if' statement will work
             if iteration>=len(train_loader): break
             log_scalars = {}
@@ -225,9 +245,9 @@ def main():
             
             # computed mask: generate mask for tumor region according to flow
             if args.masked in ['soft', 'hard']:
-               input_seg, compute_mask, ls, idct = model.pre_register(fixed, moving, seg2, training=True, cfg=args)
-               log_scalars.update(ls)
-               img_dict.update(idct)
+                input_seg, compute_mask, ls, idct = model.pre_register(fixed, moving, seg2, training=True, cfg=args)
+                log_scalars.update(ls)
+                img_dict.update(idct)
             if args.masked=='seg': input_seg = seg2.float()
             
             if args.in_channel==3:
@@ -249,25 +269,23 @@ def main():
                 warped_tseg = w_seg2>1.5
                 # w_oseg represents the organ region in the warped image, float type
                 w_oseg = mmodel.reconstruction((seg2>0.5).float(), agg_flows[-1])
-            # add log scalar tumor/ratio
-            if (seg2>1.5).sum().item() > 0:
-                t_c = (warped_tseg.sum(dim=(1,2,3,4)).float() / (seg2 > 1.5).sum(dim=(1,2,3,4)).float())
-                t_c_nn = t_c[t_c.isnan()==False]
-                log_scalars['tumor_change'] = t_c_nn.mean().item()
-                o_c = (w_seg2>0.5).sum(dim=(1,2,3,4)).float() / (seg2 > 0.5).sum(dim=(1,2,3,4)).float()
-                o_c_nn = o_c[t_c.isnan()==False]
-                log_scalars['liver_change'] = o_c_nn.mean().item()
-                log_scalars['to_ratio'] = torch.where(t_c_nn/o_c_nn >1, t_c_nn/o_c_nn, o_c_nn/t_c_nn).mean().item()
+                # add log scalar tumor/ratio
+                if (seg2>1.5).sum().item() > 0:
+                    t_c = (warped_tseg.sum(dim=(1,2,3,4)).float() / (seg2 > 1.5).sum(dim=(1,2,3,4)).float())
+                    t_c_nn = t_c[t_c.isnan()==False]
+                    log_scalars['tumor_change'] = t_c_nn.mean().item()
+                    o_c = (w_seg2>0.5).sum(dim=(1,2,3,4)).float() / (seg2 > 0.5).sum(dim=(1,2,3,4)).float()
+                    o_c_nn = o_c[t_c.isnan()==False]
+                    log_scalars['organ_change'] = o_c_nn.mean().item()
+                    log_scalars['to_ratio'] = torch.where(t_c_nn/o_c_nn >1, t_c_nn/o_c_nn, o_c_nn/t_c_nn).mean().item()
 
-            # add log scalar dice_liver
-            with torch.no_grad():
-                dice_liver, _ = dice_jaccard(w_seg2>0.5, seg1>0.5)
-                log_scalars['dice_liver'] = dice_liver.mean().item()
+                # add log scalar dice_organ
+                dice_organ, _ = dice_jaccard(w_seg2>0.5, seg1>0.5)
+                log_scalars['dice_organ'] = dice_organ.mean().item()
 
             # sim and reg loss
             # default masks used for VP loss
             mask = warped_tseg | (seg1>1.5)
-            mask_fixing = seg1
             mask_moving = seg2
             vp_seg_mask = w_seg2
             if not args.masked:
@@ -340,10 +358,10 @@ def main():
                 elif args.size_type=='dynamic':
                     # the vp_loc is a weighted mask that is calculated from the ratio of the tumor region
                     vp_tum_loc = warped_soft_mask # B, C, S, H, W
-                img_dict['vp_loc'] = visualize_3d(vp_tum_loc[0,0])
+                img_dict['vp_loc'] = visualize_3d(vp_tum_loc[0,0]).cpu()
                 img_dict['vp_loc_on_wseg2'] = visualize_3d(draw_seg_on_vol(vp_tum_loc[0,0], 
                                                                            w_seg2[0,0].round().long(), 
-                                                                           to_onehot=True))
+                                                                           to_onehot=True)).cpu()
                 bs = agg_flows[-1].shape[0]
                 # the following line uses mask_fixing and mask_moving to calculate the ratio
                 # ratio = (mask_fixing>.5).view(bs,-1).sum(1)/(mask_moving>.5).view(bs, -1).sum(1); 
@@ -356,14 +374,14 @@ def main():
                 if args.w_ks_voxel>0:
                     # Notice!! It should be *ratio instead of /ratio
                     det_flow = (jacobian_det(agg_flows[-1], return_det=True).abs()*ratio).clamp(min=1/3, max=3)
-                    img_dict['det_flow'] = visualize_3d(det_flow[0])
+                    img_dict['det_flow'] = visualize_3d(det_flow[0]).cpu()
                     vp_seg = F.interpolate(w_seg2, size=det_flow.shape[-3:], mode='trilinear', align_corners=False).float().squeeze().round().long() # B, S, H, W
-                    img_dict['det_flow_on_seg2'] = visualize_3d(draw_seg_on_vol(det_flow[0], vp_seg[0], to_onehot=True))
+                    img_dict['det_flow_on_seg2'] = visualize_3d(draw_seg_on_vol(det_flow[0], vp_seg[0], to_onehot=True)).cpu()
                     vp_mask = F.interpolate(vp_tum_loc.float(), size=det_flow.shape[-3:], mode='trilinear', align_corners=False).float().squeeze() # B, S, H, W
                     if args.ks_norm=='voxel':
                         adet_flow = torch.where(det_flow>1, det_flow, (1/det_flow))
                         k_sz_voxel = (adet_flow*vp_mask).sum()/vp_mask.sum()
-                        img_dict['vp_det_flow'] = visualize_3d(adet_flow[0])
+                        img_dict['vp_det_flow'] = visualize_3d(adet_flow[0]).cpu()
                     elif args.ks_norm=='image':
                         # normalize loss for every image
                         k_sz_voxel = (torch.where(det_flow>1, det_flow, 1/det_flow)*(vp_mask)).sum(dim=(-1,-2,-3))
@@ -372,7 +390,7 @@ def main():
                         k_sz_voxel = k_sz_voxel.mean()
                     else: raise NotImplementedError
                     k_sz = k_sz + args.w_ks_voxel*k_sz_voxel
-                    log_scalars['k_sz_voxel'] = k_sz_voxel
+                    log_scalars['k_sz_voxel'] = k_sz_voxel.item()
                 ### whole volume ratio
                 if args.w_ks_voxel<1:
                     det_flow = jacobian_det(agg_flows[-1], return_det=True).abs()
@@ -382,7 +400,7 @@ def main():
                     k_sz_volume = torch.where(k_sz_volume>1, k_sz_volume, 1/k_sz_volume)
                     k_sz_volume = k_sz_volume[k_sz_volume.nonzero()].mean()
                     k_sz = k_sz + (1-args.w_ks_voxel)*k_sz_volume
-                    log_scalars['k_sz_volume'] = k_sz_volume
+                    log_scalars['k_sz_volume'] = k_sz_volume.item()
                 k_sz = k_sz  * args.vol_preserve
                 if torch.isnan(k_sz): k_sz = sim.new_zeros(1) # k_sz is all nan
             else:   
@@ -538,9 +556,14 @@ def main():
                 ckp['val_loss'] = val_loss_log
                 ckp['epoch'] = epoch
                 ckp['global_iter'] = iteration
+                #TODO: add optimizer state dict
+                ckp['optimizer_state_dict'] = optim.state_dict()
+                ckp['scheduler_state_dict'] = scheduler.state_dict()
 
                 torch.save(ckp, f'{ckp_dir}/epoch_{epoch}_iter_{iteration}.pth')
 
+            del fixed, moving, seg2, warped_, flows, agg_flows, loss, sim, reg, 
+            del loss_dict, log_scalars, data, img_dict
             t0 = default_timer()   
         scheduler.step()
         start_iter = 0
