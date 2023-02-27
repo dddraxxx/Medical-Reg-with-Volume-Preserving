@@ -52,7 +52,7 @@ parser.add_argument('-vp', '--vol_preserve', type=float, default=0, help="use vo
 parser.add_argument('-st', '--size_type', choices=['organ', 'tumor', 'tumor_gt', 'constant', 'dynamic', 'reg'], default='tumor', help = 'organ means VP works on whole organ, tumor means VP works on tumor region, tumor_gt means VP works on tumor region with ground truth, constant means VP ratio is a constant, dynamic means VP has dynamic weight, reg means VP is replaced by reg loss')
 parser.add_argument('--ks_norm', default='voxel', choices=['image', 'voxel'])
 parser.add_argument('-w_ksv', '--w_ks_voxel', default=1, type=float, help='Weight for voxel method in ks loss')
-parser.add_argument('--stage1_rev', type=bool, default=False, help="whether to use reverse flow in stage 1")
+parser.add_argument('-s1r', '--stage1_rev', type=lambda x: x.lower() in ['true', '1', 't', 'y', 'yes'], default=False, help="whether to use reverse flow in stage 1")
 parser.add_argument('-inv', '--invert_loss', action='store_true', help="invertibility loss")
 parser.add_argument('--surf_loss', default=0, type=float, help='Surface loss weight')
 parser.add_argument('-dc', '--dice_loss', default=0, type=float, help='Dice loss weight')
@@ -62,6 +62,7 @@ parser.add_argument('-bnd_thick', '--boundary_thickness', default=0, type=float,
 parser.add_argument('-use2', '--use_2nd_flow', default=False, type=lambda x: x.lower() in ['true', '1', 't', 'y', 'yes'], help='Use 2nd flow')
 # mask calculation needs an extra mask as input
 parser.set_defaults(in_channel=3 if parser.parse_args().masked else 2)
+parser.set_defaults(stage1_rev=True if parser.parse_args().base_network == 'VXM' else False)
 
 
 args = parser.parse_args()
@@ -159,21 +160,10 @@ def main():
                 state_path = '/home/hynx/regis/recursive-cascaded-networks/logs/brain/Feb27_034554_br-normal'
             elif args.base_network == 'VXM':
                 state_path = ''
+        if args.stage1_rev:
+            print('using rev_flow')
         model.build_preregister(template_image, template_seg, state_path, args.base_network)
 
-    # add checkpoint loading
-    start_epoch = 0
-    start_iter = 0
-    if args.checkpoint or args.ctt:
-        ckp = args.checkpoint or ckp_dir
-        if os.path.isdir(ckp):
-            ckp = load_model_from_dir(ckp, model)
-        else: load_model(torch.load(os.path.join(ckp)), model)
-        print("Loaded checkpoint from {}".format(ckp))
-        if args.continue_training or args.ctt:
-            start_epoch = torch.load(ckp)['epoch']
-            start_iter = torch.load(ckp)['global_iter'] + 1
-            print("Continue training from checkpoint from epoch {} iter {}".format(start_epoch, start_iter))
         
     if dist.is_initialized():
         model = DDP(model, device_ids=[local_rank], output_device=local_rank)
@@ -192,6 +182,22 @@ def main():
         min_lr = 1e-6
         scheduler = LambdaLR(optimizer=optim, lr_lambda=lambda epoch: min_lr + (lr - min_lr) * (1 - epoch / args.epochs), last_epoch= start_epoch-1)
 
+    # add checkpoint loading
+    start_epoch = 0
+    start_iter = 0
+    if args.checkpoint or args.ctt:
+        ckp = args.checkpoint or ckp_dir
+        if os.path.isdir(ckp):
+            ckp = load_model_from_dir(ckp, model)
+        else: load_model(torch.load(os.path.join(ckp)), model)
+        print("Loaded checkpoint from {}".format(ckp))
+        if args.continue_training or args.ctt:
+            state = torch.load(ckp)
+            start_epoch = state['epoch']
+            start_iter = state['global_iter'] + 1
+            optim = state['optimizer_state_dict']
+            scheduler = state['scheduler_state_dict']
+            print("Continue training from checkpoint from epoch {} iter {}".format(start_epoch, start_iter))
     num_worker = min(8, args.batch_size)
     if dist.is_initialized():
         train_sampler = torch.utils.data.distributed.DistributedSampler(train_dataset, shuffle=True)
@@ -374,10 +380,11 @@ def main():
                 if args.w_ks_voxel>0:
                     # Notice!! It should be *ratio instead of /ratio
                     det_flow = (jacobian_det(agg_flows[-1], return_det=True).abs()*ratio).clamp(min=1/3, max=3)
-                    img_dict['det_flow'] = visualize_3d(det_flow[0]).cpu()
-                    vp_seg = F.interpolate(w_seg2, size=det_flow.shape[-3:], mode='trilinear', align_corners=False).float().squeeze().round().long() # B, S, H, W
-                    img_dict['det_flow_on_seg2'] = visualize_3d(draw_seg_on_vol(det_flow[0], vp_seg[0], to_onehot=True)).cpu()
                     vp_mask = F.interpolate(vp_tum_loc.float(), size=det_flow.shape[-3:], mode='trilinear', align_corners=False).float().squeeze() # B, S, H, W
+                    with torch.no_grad():  
+                        vp_seg = F.interpolate(w_seg2, size=det_flow.shape[-3:], mode='trilinear', align_corners=False).float().squeeze().round().long() # B, S, H, W
+                        img_dict['det_flow'] = visualize_3d(det_flow[0]).cpu()
+                        img_dict['det_flow_on_seg2'] = visualize_3d(draw_seg_on_vol(det_flow[0], vp_seg[0], to_onehot=True)).cpu()
                     if args.ks_norm=='voxel':
                         adet_flow = torch.where(det_flow>1, det_flow, (1/det_flow))
                         k_sz_voxel = (adet_flow*vp_mask).sum()/vp_mask.sum()

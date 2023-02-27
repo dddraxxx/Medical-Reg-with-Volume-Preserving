@@ -111,7 +111,7 @@ class Unet(nn.Module):
             prev_nf = nf
 
         # configure extra decoder convolutions (no up-sampling)
-        prev_nf += 2
+        prev_nf += in_channels
         self.extras = nn.ModuleList()
         for nf in self.dec_nf[len(self.enc_nf):]:
             self.extras.append(convolveLeakyReLU(prev_nf, nf, dim=ndims, kernel_size=3, stride=1, leakyr_slope=0.1))
