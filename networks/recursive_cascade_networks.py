@@ -83,24 +83,24 @@ class RecursiveCascadeNetwork(nn.Module):
                 own_state[name].copy_(param)
         self.stems.load_state_dict = load_state_dict.__get__(self.stems, nn.ModuleList)
     
-    def build_stage1_model(self):
+    def build_stage1_model(self, state_path='/home/hynx/regis/recursive-cascaded-networks/logs/Jan08_180325_normal-vtn', base_network='VTN'):
         """
         Build the stage 1 model from the saved state
 
         Returns:
             stage1_model (RecursiveCascadeNetwork | nn.Module): The stage 1 model
         """
-        state_path = '/home/hynx/regis/recursive-cascaded-networks/logs/Jan08_180325_normal-vtn'
         print('Building stage 1 model from', state_path)
-        stage1_model = RecursiveCascadeNetwork(n_cascades=self.n_casescades, im_size = self.im_size, base_network='VTN', compute_mask=False, in_channels=2)
+        stage1_model = RecursiveCascadeNetwork(n_cascades=self.n_casescades, im_size = self.im_size, base_network=base_network, compute_mask=False, in_channels=2)
         load_model_from_dir(state_path, stage1_model)
         return stage1_model
 
-    def build_preregister(self, template_input, template_seg):
+    def build_preregister(self, template_input, template_seg, state_path=None, base_network='VTN'):
         """
         Build the pre-register module. The module is currently built on the stage1 model.
         """
-        self.pre_register: PreRegister = PreRegister(self.build_stage1_model(), template_input, template_seg)
+        state_path = state_path or '/home/hynx/regis/recursive-cascaded-networks/logs/Jan08_180325_normal-vtn'
+        self.pre_register: PreRegister = PreRegister(self.build_stage1_model(state_path, base_network), template_input, template_seg)
         return self.pre_register
 
     def forward(self, fixed, moving, return_affine=False, return_neg=False):
@@ -113,18 +113,27 @@ class RecursiveCascadeNetwork(nn.Module):
         agg_flows = []
         # Affine registration
         flow, affine_params = self.stems[0](fixed, moving)
+        # affine_params['theta'] = flow.new_tensor([[1, 0, 0, 0], [0, 1, 0, 0], [0, 0, 1, 0]]).float()[None].repeat(fixed.size(0), 1, 1)
         stem_results.append(self.reconstruction(moving, flow))
+        aflow = flow
         flows.append(flow)
-        agg_flows.append(flow)
+        neg_flow = None
+        # agg_flows.append(flow)
         if return_neg:
-            # neg_flow = self.stems[0].neg_flow(affine_params['theta'], moving.size())
-            neg_flow = flow.new_zeros(flow.shape)
+            neg_flow = self.stems[0].neg_flow(affine_params['theta'], moving.size())
         for model in self.stems[1:]: # cascades
             # registration between the fixed and the warped from last cascade
             flow = model(fixed, stem_results[-1], return_neg=return_neg)
             if return_neg:
                 neg_fl = flow[1]
-                neg_flow = self.reconstruction(neg_flow, neg_fl) + neg_fl
+                ## reverse flow cannot utilize the affine params
+                # if len(agg_flows) == 1:
+                #     neg_theta = neg_affine['theta']
+                #     neg_A = neg_theta[:, :3, :3]
+                #     neg_flow = neg_fl + torch.einsum('bij, bjxyz -> bixyz', neg_A, neg_flow)
+                # else:
+                neg_flow = self.reconstruction(neg_fl, neg_flow) + neg_flow
+                del neg_fl
                 flow = flow[0]
             flows.append(flow)
             if len(agg_flows) == 1:
@@ -132,17 +141,20 @@ class RecursiveCascadeNetwork(nn.Module):
                 A = theta[:, :3, :3]
                 agg_flow = flows[0] + torch.einsum('bij, bjxyz -> bixyz', A, flow)
             else:
-                agg_flow = self.reconstruction(agg_flows[-1], flow) + flow
-            agg_flows.append(agg_flow)
+                # agg_flow = self.reconstruction(agg_flows[-1], flow) + flow
+                agg_flow = self.reconstruction(aflow, flow) + flow
+            # agg_flows.append(agg_flow)
             stem_results.append(self.reconstruction(moving, agg_flow))
+            aflow = agg_flow
+        ## to keep format as previous [results, flows, agg_flows] and also reduce memory usage
+        returns = [stem_results, flows, [aflow]]
         if return_neg:
-            agg_flows.append(neg_flow)
-        returns = [stem_results, flows, agg_flows]
+            returns.append([neg_flow])
         if return_affine:
             returns.append(affine_params)
         return returns
     
-    def composite_flow(self, old_flow, new_flow ):
+    def composite_flow(self, old_flow, new_flow):
         """
         Composite two flows into one
         """
