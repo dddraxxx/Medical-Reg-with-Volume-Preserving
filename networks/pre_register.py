@@ -27,6 +27,7 @@ class PreRegister(nn.Module):
     def forward(self, fixed, moving, seg2=None, training=False, cfg=None):
         """ Compute mask for tumor region """
         stage1_model = self.RCN
+        stage1_model.eval()
         template_image = self.template_input
         template_seg = self.template_seg
         log_scalars, img_dict = {}, {}
