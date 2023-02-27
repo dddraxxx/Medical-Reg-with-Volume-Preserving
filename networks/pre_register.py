@@ -34,7 +34,7 @@ class PreRegister(nn.Module):
             stage1_inputs = moving
             template_input = template_image.expand_as(stage1_inputs)
             # achieve organ mask via regristration
-            w_template, _, s1_agg_flows = stage1_model(stage1_inputs, template_input, return_neg=cfg.stage1_rev)
+            w_template, _, s1_agg_flows = stage1_model(stage1_inputs, template_input, return_neg=False)
             s1_flow = s1_agg_flows[-1]
             w_template_seg = stage1_model.reconstruction(template_seg.expand_as(template_input), s1_flow)
             mask_moving = w_template_seg
@@ -50,10 +50,8 @@ class PreRegister(nn.Module):
         def extract_tumor_mask(stage1_moving_flow, moving_mask, n=1, thres=3):
             flow_det_moving = jacobian_det(stage1_moving_flow, return_det=True)
             flow_det_moving = flow_det_moving.unsqueeze(1).abs()
-            if cfg.stage1_rev: flow_ratio = 1/flow_det_moving
-            else: flow_ratio = flow_det_moving
             # get n x n neighbors 
-            flow_ratio = flow_ratio.clamp(1/thres,thres)
+            flow_ratio = flow_det_moving.clamp(1/thres,thres)
             sizes = F.interpolate(flow_ratio, size=fixed.shape[-3:], mode='trilinear', align_corners=False) \
                 if flow_ratio.shape[-3:]!=fixed.shape[-3:] else flow_ratio
             flow_ratio = F.avg_pool3d(sizes, kernel_size=n, stride=1, padding=n//2)
@@ -77,19 +75,32 @@ class PreRegister(nn.Module):
             # combo_imgs(w_moving2[0,0], w_moving_seg2[0,0], boundary_region[0,0].float()).save('1.png')
             return fratio
         # find shrinking tumors
-        w_moving, w_moving_seg, rs1_flow = warp(fixed, moving, mask_moving, stage1_model)
+        if not cfg.stage1_rev:
+            w_moving, w_moving_seg, rs1_flow = warp(fixed, moving, mask_moving, stage1_model)
+        else:
+            w_moving, _, rs1_flow, ss1_flow = stage1_model(fixed, moving, return_neg=cfg.stage1_rev)
+            rs1_flow, ss1_flow = rs1_flow[-1], ss1_flow[-1]
+            w_moving = w_moving[-1]
+            w_moving_seg = stage1_model.reconstruction(mask_moving, rs1_flow)
         target_ratio = (w_moving_seg>0.5).sum(dim=(2,3,4), keepdim=True).float() / (mask_moving>0.5).sum(dim=(2,3,4), keepdim=True).float()
 
         ### better to calculate the ratio compared to the target ratio
         flow_ratio = extract_tumor_mask(rs1_flow, w_moving_seg, n=cfg.masked_neighbor) * target_ratio
         if cfg.boundary_thickness>0:
             flow_ratio = remove_boundary_weights(flow_ratio, w_moving_seg)
-        # temporarily use fix->moving flow to solve this inversion 
+        ### temporarily use fix->moving flow to solve this inversion 
+        ### except it is VXM
         ### will it cause the shrinking of tumor?
-        # reverse it to input seg
+        ## reverse it to input seg, but it is too slow
         # w_moving_rev_flow = cal_rev_flow_gpu(rs1_flow)
-        w_moving_rev_flow = stage1_model(moving, w_moving)[2][-1]
+        w_moving_rev_flow = stage1_model(moving, w_moving)[2][-1] if not cfg.stage1_rev else ss1_flow
         rev_flow_ratio = stage1_model.reconstruction(flow_ratio, w_moving_rev_flow)
+        ## below for debugging
+        # rw_moving = stage1_model.reconstruction(w_moving, w_moving_rev_flow)
+        # s1_flow_moving = stage1_model.reconstruction(w_moving, ss1_flow)
+        # combo_imgs(fixed[0,0], moving[0,0], rw_moving[0,0], s1_flow_moving[0,0]).save('0.jpg')
+        # import ipdb; ipdb.set_trace()
+
         if cfg.use_2nd_flow:
             # do the same for second stage1 registration
             w_moving2, w_moving_seg2, rs1_flow2 = warp(fixed, w_moving, w_moving_seg, stage1_model)
@@ -197,7 +208,7 @@ class PreRegister(nn.Module):
             # or the third stage flow?
             combo_imgs(*w3_moving[-1][:,0]).save(f'{save_dir}/w3_moving.jpg')
             combo_imgs(*flow_ratio3[:,0]).save(f'{save_dir}/flow_ratio3.jpg')
-            combo_imgs(*w_template[-1][[1,2,5,6],0]).save(f'{save_dir}/w_template.jpg')
+            combo_imgs(*w_template[-1][[1,2],0]).save(f'{save_dir}/w_template.jpg')
             combo_imgs(*w_template_seg[:,0]).save(f'{save_dir}/w_template_seg.jpg')
             combo_imgs(*wwseg2[:,0]).save(f'{save_dir}/wwseg2.jpg')
             # combo_imgs(*mask_fixing[:,0]).save(f'{save_dir}/mask_fixing.jpg')
