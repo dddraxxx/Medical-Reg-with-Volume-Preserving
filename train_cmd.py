@@ -39,7 +39,10 @@ elif args.mode == 'adaptive':
     command['-m'] = 'soft'
     command['-trsf'] = 'sigm'
     command['-use2'] = '0'
-    command['-bnd_thick'] = '0'
+    command['-bnd_thick'] = '0.5'
+    command['-vp'] = '0.1'
+    command['-st'] = 'dynamic'
+    command['-mask_threshold'] = '1.5'
 
 if args.type == 'normal':
     pass
@@ -50,7 +53,11 @@ elif args.type == 'mini':
     command['-v'] = '-1'
 
 command = base_command + ' ' + ' '.join([f'{k} {v}' for k, v in command.items()])
-input('Press Enter to run the following command: \n' + command)
+new_args = input('Please input extra args and press Enter to run the following command: \n' + command)
 import os
 print()
+command = command + ' ' + new_args
+print('Running command: \n' + command)
 os.system(command)
+
+# python train_cmd.py -d b -t m -m a

@@ -15,60 +15,63 @@ from metrics.surface_distance import *
 from networks.recursive_cascade_networks import RecursiveCascadeNetwork
 from data_util.dataset import Data, Split
 from tools.utils import *
+from run_utils import build_precompute, read_cfg
 
 parser = argparse.ArgumentParser()
 parser.add_argument('-c', '--checkpoint', type=str, default=None,
                     help='Specifies a previous checkpoint to load')
-parser.add_argument('-n', "--n_cascades", type=int, default=3)
-parser.add_argument('-r', '--rep', type=int, default=1,
-                    help='Number of times of shared-weight cascading')
 parser.add_argument('-g', '--gpu', type=str, default='0',
                     help='Specifies gpu device(s)')
 parser.add_argument('-d', '--dataset', type=str, default=None,
                     help='Specifies a data config')
 parser.add_argument('-v', '--val_subset', type=str, default=None)
 parser.add_argument('--batch_size', type=int, default=4, help='Size of minibatch')
-parser.add_argument('--data_args', type=str, default=None)
-parser.add_argument('--net_args', type=str, default=None)
-parser.add_argument('--name', type=str, default=None)
 parser.add_argument('-s','--save_pkl', action='store_true', help='Save the results as a pkl file')
-parser.add_argument('-base', '--base_network', type=str, default='VTN')
 parser.add_argument('-re','--reverse', action='store_true', help='If save reverse flow in pkl file')
 parser.add_argument('-tl','--test_large', action='store_true', help='If test on data with small tumor')
 parser.add_argument('-tb','--test_boundary', action='store_true', help='If test on data with tumor close to organ boundary')
 parser.add_argument('-lm', '--lmd', action='store_true', help='If test landmark locations')
 parser.add_argument('--lmk_json', type=str, default='/home/hynx/regis/recursive-cascaded-networks/landmark_json/lits17_landmark.json', help='landmark for eval files')
-parser.add_argument('-m', '--masked', action='store_true', help='If model need masks')
+# parser.add_argument('-m', '--masked', action='store_true', help='If model need masks')
 parser.add_argument('-lm_r', '--lmk_radius', type=int, default=10, help='affected landmark within radius')
 parser.add_argument('-vl', '--visual_lmk', action='store_true', help='If visualize landmark')
 parser.add_argument('-rd', '--region_dice', default=True, type=lambda x: x.lower() in ['true', '1', 't', 'y', 'yes'], help='If calculate dice for each region')
 parser.add_argument('-sd', '--surf_dist', default=True, type=lambda x: x.lower() in ['true', '1', 't', 'y', 'yes'], help='If calculate dist for each surface')
-parser.add_argument('-mt', '--masked_type', type=str, default='seg', help='masked type')
 parser.add_argument('-only_vis', '--only_vis_target', action='store_true', help='If only visualize target')
 parser.add_argument('--use_ants', action='store_true', help='if use ants to register')
+parser.add_argument('--debug', action='store_true', help='if debug')
 args = parser.parse_args()
 if args.checkpoint == 'normal':
-    args.checkpoint = '/home/hynx/regis/recursive-cascaded-networks/logs/Dec27_133859_normal/model_wts'
-    # args.checkpoint = '/home/hynx/regis/recursive-cascaded-networks/logs/Dec06_012136_normal-vtn/model_wts'
+    args.checkpoint = '/home/hynx/regis/recursive-cascaded-networks/logs/liver/VTN/Jan08_180325_normal-vtn'
 
-if args.gpu:
-    os.environ["CUDA_VISIBLE_DEVICES"] = args.gpu
+# if args.gpu:
+#     os.environ["CUDA_VISIBLE_DEVICES"] = args.gpu
+# set gpu to the one with most free memory
+import subprocess
+GPU_ID = subprocess.getoutput('nvidia-smi --query-gpu=memory.free --format=csv,nounits,noheader | nl -v 0 | sort -nrk 2 | cut -f 1| head -n 1 | xargs')
+print('Using GPU', GPU_ID)
+os.environ['CUDA_VISIBLE_DEVICES'] = GPU_ID
 
 def main():
-    # build dataset
+    # update args with checkpoint args but do not overwrite
+    model_path = args.checkpoint
+    args_training = read_cfg(model_path)
+    for k, v in args_training.items():
+        if not hasattr(args, k):
+            setattr(args, k, v)
     # read config
     with open(args.dataset, 'r') as f:
         cfg = json.load(f)
         image_size = cfg.get('image_size', [128, 128, 128])
         image_type = cfg.get('image_type', None)
         segmentation_class_value=cfg.get('segmentation_class_value', {'unknown':1})
+    # build dataset
     val_dataset = Data(args.dataset, scheme=args.val_subset or Split.VALID)
     val_loader = DataLoader(val_dataset, batch_size=args.batch_size, num_workers=min(8, args.batch_size), shuffle=False)
     # build framework
-    model = RecursiveCascadeNetwork(n_cascades=args.n_cascades, im_size=image_size, base_network=args.base_network, in_channels=2+args.masked).cuda()
+    model = RecursiveCascadeNetwork(n_cascades=args.n_cascades, im_size=image_size, base_network=args.base_network, in_channels=2+bool(args.masked)).cuda()
     # add checkpoint loading
     from tools.utils import load_model, load_model_from_dir
-    model_path = args.checkpoint
     if os.path.isdir(args.checkpoint):
         model_path = load_model_from_dir(args.checkpoint, model)
     else:
@@ -79,18 +82,14 @@ def main():
     import re
     # "([^\/]*_\d{6}_[^\/]*)"gm
     exp_name = re.search(r"([^\/]*_\d{6}_[^\/]*)", model_path).group(1)
-    output_fname = './evaluations/{}_{}{}_{}.txt'.format(exp_name, (args.name and f'{args.name}_') or '', args.val_subset or Split.VALID, '' if not args.lmd else 'lm{}'.format(args.lmk_radius))
+    output_fname = './evaluations/{}_{}_{}.txt'.format(exp_name, args.val_subset or Split.VALID, '' if not args.lmd else 'lm{}'.format(args.lmk_radius))
     print('will save to', output_fname)
 
     # stage 1 model setup
-    if args.masked_type in ['soft', 'hard']:
-        template = list(val_dataset.subset['slits-temp'].values())[0]
-        template_image, template_seg = template['volume'], template['segmentation']
-        template_image = torch.tensor(np.array(template_image).astype(np.float32)).unsqueeze(0).unsqueeze(0).cuda()/255.0
-        template_seg = torch.tensor(np.array(template_seg).astype(np.float32)).unsqueeze(0).unsqueeze(0).cuda()
-        print('Using pre-register model as stage1')
-        model.build_preregister(template_image, template_seg).RCN.cuda()
-        model.compute_mask=True
+    if args.masked in ['soft', 'hard']:
+        data_type = 'liver' if 'liver' in args.dataset else 'brain'
+        args.data_type = data_type
+        build_precompute(model, val_dataset, args)
 
     # run val
     model.eval()
@@ -142,8 +141,11 @@ def main():
             with torch.no_grad():
                 fixed = fixed.cuda()
                 moving = moving.cuda()
-                if args.masked and args.masked_type =='seg':
+                if args.masked =='seg':
                     moving_ = torch.cat([moving, seg2.float().cuda()], dim=1)
+                elif args.masked  in ['soft' , 'mask']:
+                    input_seg, compute_mask = model.pre_register(fixed, moving, seg2, training=False, cfg=args)
+                    moving_ = torch.cat([moving, input_seg.float().cuda()], dim=1)
                 else:
                     moving_ = moving
                 warped_, flows, agg_flows, affine_params = model(fixed, moving_, return_affine=True, return_neg=args.reverse)
