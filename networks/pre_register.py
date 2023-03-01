@@ -142,6 +142,8 @@ class PreRegister(nn.Module):
             dynamic_mask = rev_flow_ratio2
         else: 
             dynamic_mask = rev_flow_ratio
+        if not cfg.only_shrink:
+            dynamic_mask = torch.where(1>dynamic_mask, 1/(dynamic_mask+1e-8), dynamic_mask)
         thres = cfg.mask_threshold
         if cfg.masked=='soft':
             # TODO: move this to args
@@ -163,16 +165,10 @@ class PreRegister(nn.Module):
             input_seg = soft_mask + mask_moving
             if training:
                 img_dict['input_seg'] = visualize_3d(input_seg[0,0])
-                img_dict['soft_mask'] = visualize_3d(soft_mask[0,0])
-                # should delete in real trainning, just to check the goodneess of rev1 and rev2
-                rev_fratio = trsf_f(rev_flow_ratio)
-                img_dict['rev1_mask_on_seg2'] = visualize_3d(draw_seg_on_vol(rev_fratio[0,0],
+                # img_dict['soft_mask'] = visualize_3d(soft_mask[0,0])
+                img_dict['soft_mask_on_seg2'] = visualize_3d(draw_seg_on_vol(dynamic_mask[0,0],
                                                                             seg2[0,0].round().long(),
                                                                             to_onehot=True))
-                if cfg.use_2nd_flow:
-                    img_dict['stage1_mask_on_seg2'] = visualize_3d(draw_seg_on_vol(soft_mask[0,0], 
-                                                                        seg2[0,0].round().long(),
-                                                                        to_onehot=True))
             returns = (input_seg, soft_mask)
         elif cfg.masked=='hard':
             # thres = torch.quantile(w_n, .9)
