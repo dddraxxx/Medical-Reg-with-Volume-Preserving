@@ -1,3 +1,4 @@
+import h5py
 from timeit import default_timer
 import json
 import argparse
@@ -60,9 +61,11 @@ parser.add_argument('-ic', '--in_channel', default=2, type=int, help='Input chan
 parser.add_argument('-trsf', '--soft_transform', default='sigm', type=str, help='Soft transform')
 parser.add_argument('-bnd_thick', '--boundary_thickness', default=0, type=float, help='Boundary thickness')
 parser.add_argument('-use2', '--use_2nd_flow', default=False, type=lambda x: x.lower() in ['true', '1', 't', 'y', 'yes'], help='Use 2nd flow')
+parser.add_argument('-pc', '--pre_calc', default=False, type=lambda x: x.lower() in ['true', '1', 't', 'y', 'yes'], help='Pre-calculate the flow')
 # mask calculation needs an extra mask as input
 parser.set_defaults(in_channel=3 if parser.parse_args().masked else 2)
 parser.set_defaults(stage1_rev=True if parser.parse_args().base_network == 'VXM' else False)
+parser.set_defaults(n_cascades=1 if parser.parse_args().base_network != 'VTN' else 3)
 
 
 args = parser.parse_args()
@@ -90,9 +93,26 @@ def main():
         dist.init_process_group(backend='nccl', init_method='env://')
     else:
         local_rank = 0
+
+    train_scheme = args.training_scheme or Split.TRAIN
+    val_scheme = args.val_scheme or Split.VALID
+    print('Train', train_scheme)
+    print('Val', val_scheme)
+    train_dataset = Data(args.dataset, rounds=args.round*args.batch_size, scheme=train_scheme)
+    val_dataset = Data(args.dataset, scheme=val_scheme)
+
     # Hong Kong time
     dt = datetime.datetime.now(tz=datetime.timezone(datetime.timedelta(hours=8)))
-    run_id = dt.strftime('%b%d_%H%M%S') + (args.name and '_' + args.name)
+    run_id = '_'.join([dt.strftime('%b%d-%H%M%S'), 
+                       str(train_scheme) + ('pc' if args.pre_calc else ''), # what dataset to use and whether to pre-calculate the flow
+                       args.base_network+'x'+str(args.n_cascades), # base network and number of cascades
+                       args.name, 
+                       args.soft_transform+'bnd'+str(args.boundary_thickness)+'st{}'.format(1+args.use_2nd_flow) 
+                       if args.masked in ['soft', 'hard'] else args.masked,             # params for transforming jacobian
+                       'vp'+str(args.vol_preserve)+'st'+args.size_type if args.vol_preserve>0 else '' # params for volume preserving loss
+                       ])
+    args.run_id = run_id
+    print('run_id for the exp is', run_id)
 
     ckp_freq = int(args.checkpoint_frequency * args.round)
     data_type = 'liver' if 'liver' in args.dataset else 'brain'
@@ -103,7 +123,7 @@ def main():
             ### TODO: Add the wandb logger
             # wandb.init(project='RCN', config=args, sync_tensorboard=True)
             print("Creating log dir")
-            log_dir = os.path.join('./logs', data_type, run_id)
+            log_dir = os.path.join('./logs', data_type, args.base_network, run_id)
             os.path.exists(log_dir) or os.makedirs(log_dir)
             writer = SummaryWriter(log_dir=log_dir)
             if not os.path.exists(log_dir+'/model_wts/'):
@@ -132,37 +152,37 @@ def main():
     with open(args.dataset, 'r') as f:
         cfg = json.load(f)
         image_size = cfg.get('image_size', [128, 128, 128])
-        image_type = cfg.get('image_type', None)
         segmentation_class_value=cfg.get('segmentation_class_value', {'unknown':1})
-
-    train_scheme = args.training_scheme or Split.TRAIN
-    val_scheme = args.val_scheme or Split.VALID
-    print('Train', train_scheme)
-    print('Val', val_scheme)
-    train_dataset = Data(args.dataset, rounds=args.round*args.batch_size, scheme=train_scheme)
-    val_dataset = Data(args.dataset, scheme=val_scheme)
 
     in_channels = args.in_channel
     model = RecursiveCascadeNetwork(n_cascades=args.n_cascades, im_size=image_size, base_network=args.base_network, in_channels=in_channels, compute_mask=False).cuda()
     if args.masked in ['soft', 'hard']:
-        template = list(train_dataset.subset['temp'].values())[0]
-        template_image, template_seg = template['volume'], template['segmentation']
-        template_image = torch.tensor(np.array(template_image).astype(np.float32)).unsqueeze(0).unsqueeze(0).cuda()/255.0
-        template_seg = torch.tensor(np.array(template_seg).astype(np.float32)).unsqueeze(0).unsqueeze(0).cuda()
-        if data_type == 'liver':
-            if args.base_network == 'VTN':
-                state_path = '/home/hynx/regis/recursive-cascaded-networks/logs/Jan08_180325_normal-vtn'
-            elif args.base_network == 'VXM':
-                # state_path = '/home/hynx/regis/recursive-cascaded-networks/logs/Jan08_180325_normal-vtn'
-                state_path = '/home/hynx/regis/recursive-cascaded-networks/logs/Jan08_175614_normal-vxm'
-        elif data_type == 'brain':
-            if args.base_network == 'VTN':
-                state_path = '/home/hynx/regis/recursive-cascaded-networks/logs/brain/Feb27_034554_br-normal'
-            elif args.base_network == 'VXM':
-                state_path = ''
-        if args.stage1_rev:
-            print('using rev_flow')
-        model.build_preregister(template_image, template_seg, state_path, args.base_network)
+        if args.pre_calc:
+            precompute_h5 = '/home/hynx/regis/recursive-cascaded-networks/datasets/{}_computed.h5'.format(args.base_network)
+            assert os.path.exists(precompute_h5), 'Pre-computed flow not found'
+            precompute_h5 = h5py.File(precompute_h5, 'r')
+            train_dataset.precompute = precompute_h5
+            val_dataset.precompute = precompute_h5
+        else:
+            precompute_h5 = False
+            template = list(train_dataset.subset['temp'].values())[0]
+            template_image, template_seg = template['volume'], template['segmentation']
+            template_image = torch.tensor(np.array(template_image).astype(np.float32)).unsqueeze(0).unsqueeze(0).cuda()/255.0
+            template_seg = torch.tensor(np.array(template_seg).astype(np.float32)).unsqueeze(0).unsqueeze(0).cuda()
+            if data_type == 'liver':
+                if args.base_network == 'VTN':
+                    state_path = '/home/hynx/regis/recursive-cascaded-networks/logs/liver/VTN/Jan08_180325_normal-vtn'
+                elif args.base_network == 'VXM':
+                    # state_path = '/home/hynx/regis/recursive-cascaded-networks/logs/Jan08_180325_normal-vtn'
+                    state_path = '/home/hynx/regis/recursive-cascaded-networks/logs/liver/VXM/Jan08_175614_normal-vxm'
+            elif data_type == 'brain':
+                if args.base_network == 'VTN':
+                    state_path = '/home/hynx/regis/recursive-cascaded-networks/logs/brain/VTN/Feb27_034554_br-normal'
+                elif args.base_network == 'VXM':
+                    state_path = ''
+            if args.stage1_rev:
+                print('using rev_flow')
+            model.build_preregister(template_image, template_seg, state_path, args.base_network)
 
         
     if dist.is_initialized():
@@ -243,18 +263,23 @@ def main():
             # do some augmentation
             seg1 = data['segmentation1'].cuda()
             seg2 = data['segmentation2'].cuda()
-            if args.augment and (not args.debug):
-                moving, seg2 = model.augment(moving, seg2)
-            if args.invert_loss:
-                fixed, moving = torch.cat([fixed, moving], dim=0), torch.cat([moving, fixed], dim=0)
-                seg1, seg2 = torch.cat([seg1, seg2], dim=0), torch.cat([seg2, seg1], dim=0)
             
             # computed mask: generate mask for tumor region according to flow
             if args.masked in ['soft', 'hard']:
-                input_seg, compute_mask, ls, idct = model.pre_register(fixed, moving, seg2, training=True, cfg=args)
-                log_scalars.update(ls)
-                img_dict.update(idct)
+                if precompute_h5:
+                    input_seg, compute_mask = data['input_seg'].cuda(), data['compute_mask'].cuda()
+                else:
+                    input_seg, compute_mask, ls, idct = model.pre_register(fixed, moving, seg2, training=True, cfg=args)
+                    log_scalars.update(ls)
+                    img_dict.update(idct)
             if args.masked=='seg': input_seg = seg2.float()
+            
+            ## No augment here
+            # if args.augment and (not args.debug):
+            #     moving, seg2 = model.augment(moving, seg2)
+            if args.invert_loss:
+                fixed, moving = torch.cat([fixed, moving], dim=0), torch.cat([moving, fixed], dim=0)
+                seg1, seg2 = torch.cat([seg1, seg2], dim=0), torch.cat([seg2, seg1], dim=0)
             
             if args.in_channel==3:
                 moving_ = torch.cat([moving, input_seg], dim=1)
@@ -497,7 +522,10 @@ def main():
                             if args.masked=='seg':
                                 moving_ = torch.cat([moving, seg2], dim=1)
                             elif args.masked in ['soft', 'hard']:
-                                input_seg, compute_mask = model.pre_register(fixed, moving, seg2, training=False, cfg=args)
+                                if precompute_h5:
+                                    input_seg, compute_mask = data['input_seg'].cuda(), data['compute_mask'].cuda()
+                                else:
+                                    input_seg, compute_mask = model.pre_register(fixed, moving, seg2, training=False, cfg=args)
                                 moving_ = torch.cat([moving, input_seg], dim=1)
                             else:
                                 moving_ = moving
