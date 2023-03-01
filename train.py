@@ -20,6 +20,7 @@ from torch.utils.tensorboard import SummaryWriter
 from data_util.dataset import Data, Split
 from torch import distributed as dist
 from torch.nn.parallel import DistributedDataParallel as DDP
+from run_utils import build_precompute, read_cfg
 
 parser = argparse.ArgumentParser()
 parser.add_argument('-bs', "--batch_size", type=int, default=4)
@@ -37,7 +38,7 @@ parser.add_argument('-g', '--gpu', type=str, default='', help='GPU to use')
 parser.add_argument('-d', '--dataset', type=str, default='datasets/liver_cust.json', help='Specifies a data config')
 parser.add_argument("-ts", "--training_scheme", type=lambda x:int(x) if x.isdigit() else x, default='', help='Specifies a training scheme')
 parser.add_argument('-vs', '--val_scheme', type=lambda x:int(x) if x.isdigit() else x, default='', help='Specifies a validation scheme')
-parser.add_argument('-aug', '--augment', default=True, type=lambda x: x.lower() in ['true', '1', 't', 'y', 'yes'], help='Augment data')
+parser.add_argument('-aug', '--augment', default=False, type=lambda x: x.lower() in ['true', '1', 't', 'y', 'yes'], help='Augment data')
 parser.add_argument('--lr', type=float, default=1e-4)
 parser.add_argument('--lr_scheduler', default = 'step', type=str, help='lr scheduler', choices=['linear', 'step', 'cosine'])
 parser.add_argument('--debug', action='store_true', help="run the script without saving files")
@@ -116,6 +117,7 @@ def main():
 
     ckp_freq = int(args.checkpoint_frequency * args.round)
     data_type = 'liver' if 'liver' in args.dataset else 'brain'
+    args.data_type = data_type
 
     # mkdirs for log and Tensorboard
     if not args.debug:
@@ -123,7 +125,7 @@ def main():
             ### TODO: Add the wandb logger
             # wandb.init(project='RCN', config=args, sync_tensorboard=True)
             print("Creating log dir")
-            log_dir = os.path.join('./logs', data_type, args.base_network, run_id)
+            log_dir = os.path.join('./logs', data_type, args.base_network, train_scheme, run_id)
             os.path.exists(log_dir) or os.makedirs(log_dir)
             writer = SummaryWriter(log_dir=log_dir)
             if not os.path.exists(log_dir+'/model_wts/'):
@@ -165,25 +167,7 @@ def main():
             val_dataset.precompute = precompute_h5
         else:
             precompute_h5 = False
-            template = list(train_dataset.subset['temp'].values())[0]
-            template_image, template_seg = template['volume'], template['segmentation']
-            template_image = torch.tensor(np.array(template_image).astype(np.float32)).unsqueeze(0).unsqueeze(0).cuda()/255.0
-            template_seg = torch.tensor(np.array(template_seg).astype(np.float32)).unsqueeze(0).unsqueeze(0).cuda()
-            if data_type == 'liver':
-                if args.base_network == 'VTN':
-                    state_path = '/home/hynx/regis/recursive-cascaded-networks/logs/liver/VTN/Jan08_180325_normal-vtn'
-                elif args.base_network == 'VXM':
-                    # state_path = '/home/hynx/regis/recursive-cascaded-networks/logs/Jan08_180325_normal-vtn'
-                    state_path = '/home/hynx/regis/recursive-cascaded-networks/logs/liver/VXM/Jan08_175614_normal-vxm'
-            elif data_type == 'brain':
-                if args.base_network == 'VTN':
-                    state_path = '/home/hynx/regis/recursive-cascaded-networks/logs/brain/VTN/Feb27_034554_br-normal'
-                elif args.base_network == 'VXM':
-                    state_path = ''
-            if args.stage1_rev:
-                print('using rev_flow')
-            model.build_preregister(template_image, template_seg, state_path, args.base_network)
-
+            build_precompute(model, train_dataset, args)
         
     if dist.is_initialized():
         model = DDP(model, device_ids=[local_rank], output_device=local_rank)
@@ -243,6 +227,7 @@ def main():
         train_reg_loss = 0
         vis_batch = []
         t0 = default_timer()
+        st_t = default_timer()
         for iteration, data in enumerate(train_loader, start=start_iter):
             # torch clear cache
             # torch.cuda.empty_cache()
@@ -477,6 +462,9 @@ def main():
 
             if local_rank==0 and (iteration%10==0):
                 if iteration<500 or iteration % 500 == 0:
+                    avg_time_per_iter = (default_timer() - st_t) / (iteration + 1 - start_iter)
+                    est_time_for_epo = avg_time_per_iter * (len(train_loader) - iteration)
+                    est_time_for_train = (args.epochs - epoch - 1) * len(train_loader) * avg_time_per_iter + est_time_for_epo
                     print('*%s* ' % run_id,
                           time.strftime('%Y-%m-%d %H:%M:%S', time.localtime()),
                           'Epoch %d Steps %d, Total time %.2f, data %.2f%%. Loss %.3e lr %.3e' % (epoch, iteration,
@@ -486,6 +474,8 @@ def main():
                                                                                          loss,
                                                                                          lr),
                           end='\n')
+                    print('Estimated time for epoch: %.2f, Estimated time for training: %.2f' % (
+                        est_time_for_epo, est_time_for_train))
                     if not args.debug:
                         writer.add_image('train/img1', visualize_3d(fixed[0, 0]), epoch * len(train_loader) + iteration)
                         writer.add_image('train/img2', visualize_3d(moving[0, 0]), epoch * len(train_loader) + iteration)
