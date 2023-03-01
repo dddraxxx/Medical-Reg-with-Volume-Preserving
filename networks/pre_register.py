@@ -129,13 +129,16 @@ class PreRegister(nn.Module):
             dynamic_mask = rev_flow_ratio2
         else: 
             dynamic_mask = rev_flow_ratio
+        thres = cfg.mask_threshold
         if cfg.masked=='soft':
+            # TODO: move this to args
+            thres = 1.5
             # temporarily increase tumor area to check if dynamic weights works
-            # rev_flow_ratio2 = torch.maximum(((seg2>1.5).float() + rev_flow_ratio2)/2, rev_flow_ratio2)
+            # rev_flow_ratio2 = torch.maximum(((seg2>thres).float() + rev_flow_ratio2)/2, rev_flow_ratio2)
             # set up a functino to transfer flow_ratio to soft_mask for similarity (and possibly VP loss)
-            sin_trsf_f = lambda x: torch.sin(((x-1.5)/.5).clamp(-1,1)*(np.pi/2)) * 0.5 + 0.5 # the value should be between 0 and 1
+            sin_trsf_f = lambda x: torch.sin(((x-thres)/.5).clamp(-1,1)*(np.pi/2)) * 0.5 + 0.5 # the value should be between 0 and 1
             # use (-5,5) interval of sigmoid to stimulate the desired transformation
-            sigm_trsf_f = lambda x: torch.sigmoid((x-1.5)*5)
+            sigm_trsf_f = lambda x: torch.sigmoid((x-thres)*5)
             if cfg.soft_transform=='sin':
                 trsf_f = sin_trsf_f
             elif cfg.soft_transform=='sigm':
@@ -163,8 +166,8 @@ class PreRegister(nn.Module):
             thres = cfg.mask_threshold
             hard_mask = dynamic_mask > thres
             input_seg = hard_mask + mask_moving
-            hard_mask_onimg = draw_seg_on_vol(moving[0,0], input_seg[0,0].round().long(), to_onehot=True)
             if training:
+                hard_mask_onimg = draw_seg_on_vol(moving[0,0], input_seg[0,0].round().long(), to_onehot=True)
                 img_dict['input_seg'] = visualize_3d(input_seg[0,0])
                 img_dict['stage1_mask_on_seg2']= visualize_3d(hard_mask_onimg)
             returns = (input_seg, hard_mask)

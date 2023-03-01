@@ -42,7 +42,7 @@ elif args.mode == 'adaptive':
     command['-bnd_thick'] = '0.5'
     command['-vp'] = '0.1'
     command['-st'] = 'dynamic'
-    command['-mask_threshold'] = '1.5'
+    command['--mask_threshold'] = '1.5'
 
 if args.type == 'normal':
     pass

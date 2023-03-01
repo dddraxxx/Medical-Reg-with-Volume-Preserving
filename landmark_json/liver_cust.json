@@ -68,20 +68,23 @@
     "lits-mini": {
       "lits-mini": 1.0
     },
-    "sliver": {
+    "sliver-val": {
       "sliver-val": 1.0
     },
-    "lits": {
+    "lits-val": {
       "lits-val": 1.0
     },
     "lspig": {
       "lspig-val": 1.0
     },
-    "lits-d": {
-      "lits_d": 1.0
+    "lits": {
+      "lits": 1.0
     },
     "lits-p": {
       "lits_paste_tumor": 1.0
+    },
+    "sliver":{
+      "sliver":1.0
     }
   },
   "subsets": {
@@ -1131,6 +1134,12 @@
     "lits_paste_tumor": [
       "lits_p/*"
     ],
+    "lits": [
+      "lits/*"
+    ],
+    "sliver":[
+      "yanx/*"
+    ],
     "lmk-val":[
       "lits/53",
       "lits/71",
@@ -1156,7 +1165,7 @@
       "yanx/9",
       "yanx/14"
     ],
-    "slits-temp":[
+    "temp":[
       "yanx/20"
     ],
     "lits-sliver-train": [

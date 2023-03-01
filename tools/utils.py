@@ -1,6 +1,7 @@
 from typing import Iterable
 import torch
 from torchvision.utils import make_grid, save_image, draw_segmentation_masks
+import torch.nn.functional as F
 import numpy as np
 from PIL import Image
 
@@ -19,15 +20,24 @@ def interpolate_flow(flow, points):
     points_6 = points + points_1.new_tensor([1,0,1])[None,:,None]
     points_7 = points + points_1.new_tensor([0,1,1])[None,:,None]
     points_8 = points + points_1.new_tensor([1,1,1])[None,:,None]
+    # get flow vector at each of the 8 corners of the cube
     p1_flow = flow[:, :, points_1[:,0].long(), points_1[:,1].long(), points_1[:,2].long()]
-    points_flow = flow[points_1] * (points_1 - points).abs().prod(dim=1, keepdim=True) + \
-                    points_2 * (points_2 - points).abs().prod(dim=1, keepdim=True) + \
-                    points_3 * (points_3 - points).abs().prod(dim=1, keepdim=True) + \
-                    points_4 * (points_4 - points).abs().prod(dim=1, keepdim=True) + \
-                    points_5 * (points_5 - points).abs().prod(dim=1, keepdim=True) + \
-                    points_6 * (points_6 - points).abs().prod(dim=1, keepdim=True) + \
-                    points_7 * (points_7 - points).abs().prod(dim=1, keepdim=True) + \
-                    points_8 * (points_8 - points).abs().prod(dim=1, keepdim=True)
+    p2_flow = flow[:, :, points_2[:,0].long(), points_2[:,1].long(), points_2[:,2].long()]
+    p3_flow = flow[:, :, points_3[:,0].long(), points_3[:,1].long(), points_3[:,2].long()]
+    p4_flow = flow[:, :, points_4[:,0].long(), points_4[:,1].long(), points_4[:,2].long()]
+    p5_flow = flow[:, :, points_5[:,0].long(), points_5[:,1].long(), points_5[:,2].long()]
+    p6_flow = flow[:, :, points_6[:,0].long(), points_6[:,1].long(), points_6[:,2].long()]
+    p7_flow = flow[:, :, points_7[:,0].long(), points_7[:,1].long(), points_7[:,2].long()]
+    p8_flow = flow[:, :, points_8[:,0].long(), points_8[:,1].long(), points_8[:,2].long()]
+    # compute the flow vector at each point in the cube
+    points_flow = p1_flow * (points_1 - points).abs().prod(dim=1, keepdim=True) + \
+                    p2_flow * (points_2 - points).abs().prod(dim=1, keepdim=True) + \
+                    p3_flow * (points_3 - points).abs().prod(dim=1, keepdim=True) + \
+                    p4_flow * (points_4 - points).abs().prod(dim=1, keepdim=True) + \
+                    p5_flow * (points_5 - points).abs().prod(dim=1, keepdim=True) + \
+                    p6_flow * (points_6 - points).abs().prod(dim=1, keepdim=True) + \
+                    p7_flow * (points_7 - points).abs().prod(dim=1, keepdim=True) + \
+                    p8_flow * (points_8 - points).abs().prod(dim=1, keepdim=True)
     return points_flow
 
 def load_model(state_dict, model):
@@ -55,10 +65,10 @@ def get_nearest(ref, points, k, picked_points):
     Find the k nearest picked points for each reference point in 'ref' using the set of points in 'points'.
 
     Parameters:
-        ref (numpy.ndarray): A 3D numpy array of shape (N, 3, D) representing the reference points.
-        points (numpy.ndarray): A 3D numpy array of shape (M, 3, D) representing the set of points to search in.
+        ref (numpy.ndarray): A 3D numpy array of shape (N, L1, D) representing the reference points.
+        points (numpy.ndarray): A 3D numpy array of shape (N, L2, D) representing the set of points to search in.
         k (int): The number of nearest picked points to find for each reference point.
-        picked_points (numpy.ndarray): A 2D numpy array of shape (P, 3, D) representing the picked points to gather for.
+        picked_points (numpy.ndarray): A 2D numpy array of shape (N, L2, D) representing the picked points to gather for.
 
     Returns:
         nearest_points (numpy.ndarray): A 3D numpy array of shape (N, k, D) representing the k nearest picked points for each reference point.
@@ -67,7 +77,7 @@ def get_nearest(ref, points, k, picked_points):
     nearest_points = frnn.frnn_gather(picked_points, idxs, k)
     return nearest_points
 
-def visualize_3d(data, width=5, inter_dst=5, save_name=None, print_=False, color_channel: int=None, norm: bool=False):
+def visualize_3d(data, width=5, inter_dst=5, save_name=None, print_=False, color_channel: int=None, norm: bool=False, cmap=None):
     """
     data: (S, H, W) or (N, C, H, W)"""
     data =tt(data)
@@ -85,7 +95,14 @@ def visualize_3d(data, width=5, inter_dst=5, save_name=None, print_=False, color
     if color_channel is not None:
         img_s = img_s.movedim(color_channel, 1)
 
-    img_f = make_grid(img_s, nrow=width, padding=5, pad_value=1, normalize=True)
+    if type(cmap) == str:
+        cmap = plt.get_cmap(cmap)
+    if cmap:
+        alpha = img_s.cpu()
+        img_s = cmap(img_s.cpu().numpy()*255) # cmap range is from 0-255
+        img_s = torch.from_numpy(img_s).float().squeeze().permute(0, 3, 1, 2)
+        img_s[:,[-1]] = alpha # add the alpha channel
+    img_f = make_grid(img_s, nrow=width, padding=5, pad_value=1, normalize=True) # make_grid assumes that the input is in range [0, 1]
     if save_name:
         save_image(img_f, save_name)
         if print_:
@@ -121,7 +138,7 @@ class PyTMinMaxScalerVectorized(object):
         tensor.mul_(scale).sub_(tensor.min(dim=-1, keepdim=True)[0])
         return tensor.view(*s)
 
-def draw_seg_on_vol(data, lb, if_norm=True, alpha=0.3, colors=["green", "red", "blue"]):
+def draw_seg_on_vol(data, lb, if_norm=True, alpha=0.3, colors=["green", "red", "blue"], to_onehot=False):
     """
     Plot a 3D volume with binary segmentation masks overlaid on it.
 
@@ -131,10 +148,16 @@ def draw_seg_on_vol(data, lb, if_norm=True, alpha=0.3, colors=["green", "red", "
         if_norm (bool): Whether to normalize the input volume. Default is True.
         alpha (float): Transparency of the overlay masks. Default is 0.3.
         colors (list): List of colors to use for overlay masks. Default is ["green", "red", "blue"].
+        to_onehot (bool): Whether to convert the input masks to one-hot encoding. Default is False.
         
     Returns:
         torch.Tensor: Normalized output volume with overlay masks, shape: (S, 3, H, W).
     """
+    if to_onehot:
+        # check lb type long
+        assert lb.dtype == torch.long or np.issubdtype(lb.dtype, np.integer), "lb should be integer"
+        # remove class 0 (assume background)
+        lb = F.one_hot(lb).moveaxis(3,0)[1:]
     lb = tt(lb).reshape(-1, *lb.shape[-3:])
     data =tt(data).float().reshape(1, *data.shape[-3:])
     if if_norm:
@@ -150,29 +173,41 @@ def draw_seg_on_vol(data, lb, if_norm=True, alpha=0.3, colors=["green", "red", "
                         ))
     return torch.stack(res)/255
     
-def show_img(res, save_path=None):
+def show_img(res, save_path=None, norm=True, cmap=None) -> Image:
     import torchvision.transforms as T
-    res = tt(res)
+    if norm: res = normalize(res)
     if res.ndim>=3:
-        return T.ToPILImage()(visualize_3d(res))
+        return T.ToPILImage()(visualize_3d(res, cmap=cmap))
     # normalize res
     res = (res-res.min())/(res.max()-res.min())
+
     pimg = T.ToPILImage()(res)
     if save_path:
         pimg.save(save_path)
     return pimg
 
 from PIL import Image
-def combine_pil_img(*ims):
+def combine_pil_img(*ims, axis=1, padding=5):
+    if len(ims)==1:
+        # create RGB
+        im = ims[0].convert('RGB')
+        return im
     widths, heights = zip(*(i.size for i in ims))
-    total_width = sum(widths) + 5*(len(ims)-1)
-    total_height = max(heights)
+    if axis==1:
+        total_width = sum(widths) + padding*(len(ims)-1)
+        total_height = max(heights)
+    elif axis==0:
+        total_width = max(widths)
+        total_height = sum(heights) + padding*(len(ims)-1)
     im = Image.new('RGB', (total_width, total_height), color='white')
     for i, im_ in enumerate(ims):
-        im.paste(im_, (sum(widths[:i])+5*i, 0))
+        if axis==1:
+            im.paste(im_, (sum(widths[:i])+padding*i, 0))
+        elif axis==0:
+            im.paste(im_, (0, sum(heights[:i])+padding*i))
     return im
 
-combo_imgs = lambda *ims: combine_pil_img(*[show_img(i) for i in ims])
+combo_imgs = lambda *ims, axis=1: combine_pil_img(*[show_img(i) for i in ims], axis=axis)
 
 import matplotlib.pyplot as plt
 def plt_img3d_show(imgs, cmap, intrv=5):
@@ -256,3 +291,56 @@ def cal_rev_flow(flow):
     points = xi+flow.reshape(-1, 3)
     values = -flow.reshape(-1,3)
     return griddata(points, values, xi, method='nearest').reshape(*flow.shape)
+
+def cal_rev_flow_gpu(flow):
+    """
+    flow: (B, 3, H, W, D)
+    
+    Return:
+    rev_flow: (B, 3, H, W, D)"""
+    bs = flow.shape[0]
+    shape = flow.shape[-3:]
+    xi = torch.stack(torch.meshgrid([torch.arange(0, i) for i in shape], indexing='ij'), dim=0) # 3, H, W, D
+    xi = xi.float().reshape(3, -1).T.to(flow.device).repeat(bs, 1, 1) # B, H*W*D, 3
+    flow = flow.permute(0, 2, 3, 4, 1).reshape(bs, -1, 3) # B, H*W*D, 3
+    points = xi+flow
+    values = -flow
+    nn_bors = get_nearest(points, xi, 1, values) # B, H*W*D, 1, 3
+    return nn_bors.squeeze(2).permute(0, 2, 1).reshape(bs, 3, *shape)
+
+from tools.extensions.gridding import Gridding
+# grid = Gridding(128)
+def quick_cal_rev_flow_gpu(flow):
+    """
+    flow: (B, 3, H, W, D)
+    
+    Return:
+    rev_flow: (B, 3, H, W, D)"""
+    bs = flow.shape[0]
+    shape = flow.shape[-3:]
+    xi = torch.stack(torch.meshgrid([torch.arange(0, i) for i in shape], indexing='ij'), dim=0) # 3, H, W, D
+    xi = xi.float().reshape(3, -1).T.to(flow.device).repeat(bs, 1, 1) # B, H*W*D, 3
+    flow = flow.permute(0, 2, 3, 4, 1).reshape(bs, -1, 3) # B, H*W*D, 3
+    points = xi+flow
+    values = -flow
+    
+def find_surf(seg, kernel=3, thres=1):
+    '''
+    Find near-surface voxels of a segmentation.
+
+    Args:
+        seg: (**,D,H,W)
+        radius: int
+    
+    Returns:
+        surf: (**,D,H,W)
+    '''
+    if thres<=0:
+        return torch.zeros_like(seg).bool()
+    pads = tuple((kernel-1)//2 for _ in range(6))
+    seg_k = F.pad(seg, pads, mode='constant', value=0).unfold(2, kernel, 1).unfold(3, kernel, 1).unfold(4, kernel, 1)
+    seg_num = seg_k.sum(dim=(-1,-2,-3))
+    surf = (seg_num<(kernel**3)*thres) & seg.bool()
+    # how large a boundary we want to remove?
+    # surf = (seg_num<(kernel**3//2)) & seg.bool()
+    return surf

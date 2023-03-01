@@ -115,6 +115,8 @@ def plot_landmarks(img, landmarks, fig=None, ax=None, save_path=None, every_n = 
     return fig, axes
 
 def plot_to_PIL():
+    """
+    Convert a matplotlib plot into a PIL image."""
     from io import BytesIO
     from PIL import Image
     # convert the plot into a bytes-like object

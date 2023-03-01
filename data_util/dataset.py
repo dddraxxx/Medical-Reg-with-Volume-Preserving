@@ -189,6 +189,10 @@ class Data(Dataset):
         # normalize voxel
         ret['voxel1'] = ret['voxel1'] / 255.0
         ret['voxel2'] = ret['voxel2'] / 255.0
+        if hasattr(self, 'precompute'):
+            input_seg, compute_mask = self.precompute[ret['id2']]['input_seg'], self.precompute[ret['id2']]['compute_mask']
+            ret['input_seg'] = input_seg[...]
+            ret['compute_mask'] = compute_mask[...]
         return ret
 
 if __name__ == '__main__':

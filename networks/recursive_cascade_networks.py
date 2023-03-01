@@ -144,7 +144,8 @@ class RecursiveCascadeNetwork(nn.Module):
                 # agg_flow = self.reconstruction(agg_flows[-1], flow) + flow
                 agg_flow = self.reconstruction(aflow, flow) + flow
             # agg_flows.append(agg_flow)
-            stem_results.append(self.reconstruction(moving, agg_flow))
+            # stem_results.append(self.reconstruction(moving, agg_flow))
+            stem_results[-1] = self.reconstruction(moving, agg_flow)
             aflow = agg_flow
         ## to keep format as previous [results, flows, agg_flows] and also reduce memory usage
         returns = [stem_results, flows, [aflow]]

@@ -48,7 +48,7 @@ parser.add_argument('--det', type=float, default=0.1, help="use det loss")
 parser.add_argument('--reg', type=float, default=1, help="use reg loss")
 parser.add_argument('-m', '--masked', choices=['soft', 'seg', 'hard'], default='',
      help="mask the tumor part when calculating similarity loss")
-parser.add_argument('-mt', '--mask_threshold', type=float, default=2, help="volume changing threshold for mask")
+parser.add_argument('-mt', '--mask_threshold', type=float, default=1.5, help="volume changing threshold for mask")
 parser.add_argument('-mn', '--masked_neighbor', type=int, default=3, help="for masked neibor calculation")
 parser.add_argument('-vp', '--vol_preserve', type=float, default=0, help="use volume-preserving loss")
 parser.add_argument('-st', '--size_type', choices=['organ', 'tumor', 'tumor_gt', 'constant', 'dynamic', 'reg'], default='tumor', help = 'organ means VP works on whole organ, tumor means VP works on tumor region, tumor_gt means VP works on tumor region with ground truth, constant means VP ratio is a constant, dynamic means VP has dynamic weight, reg means VP is replaced by reg loss')
@@ -60,7 +60,7 @@ parser.add_argument('--surf_loss', default=0, type=float, help='Surface loss wei
 parser.add_argument('-dc', '--dice_loss', default=0, type=float, help='Dice loss weight')
 parser.add_argument('-ic', '--in_channel', default=2, type=int, help='Input channel number')
 parser.add_argument('-trsf', '--soft_transform', default='sigm', type=str, help='Soft transform')
-parser.add_argument('-bnd_thick', '--boundary_thickness', default=0, type=float, help='Boundary thickness')
+parser.add_argument('-bnd_thick', '--boundary_thickness', default=0.5, type=float, help='Boundary thickness')
 parser.add_argument('-use2', '--use_2nd_flow', default=False, type=lambda x: x.lower() in ['true', '1', 't', 'y', 'yes'], help='Use 2nd flow')
 parser.add_argument('-pc', '--pre_calc', default=False, type=lambda x: x.lower() in ['true', '1', 't', 'y', 'yes'], help='Pre-calculate the flow')
 # mask calculation needs an extra mask as input
@@ -125,7 +125,7 @@ def main():
             ### TODO: Add the wandb logger
             # wandb.init(project='RCN', config=args, sync_tensorboard=True)
             print("Creating log dir")
-            log_dir = os.path.join('./logs', data_type, args.base_network, train_scheme, run_id)
+            log_dir = os.path.join('./logs', data_type, args.base_network, str(train_scheme), run_id)
             os.path.exists(log_dir) or os.makedirs(log_dir)
             writer = SummaryWriter(log_dir=log_dir)
             if not os.path.exists(log_dir+'/model_wts/'):
@@ -158,6 +158,12 @@ def main():
 
     in_channels = args.in_channel
     model = RecursiveCascadeNetwork(n_cascades=args.n_cascades, im_size=image_size, base_network=args.base_network, in_channels=in_channels, compute_mask=False).cuda()
+    # compute model size
+    total_params = sum(p.nelement()*p.element_size() for p in model.parameters())
+    total_buff = sum(b.nelement()*b.element_size() for b in model.buffers())
+    size_all_mb = (total_params + total_buff)/ 1024**2
+    print('model size: {:.3f}MB'.format(size_all_mb))
+    
     if args.masked in ['soft', 'hard']:
         if args.pre_calc:
             precompute_h5 = '/home/hynx/regis/recursive-cascaded-networks/datasets/{}_computed.h5'.format(args.base_network)
@@ -465,6 +471,9 @@ def main():
                     avg_time_per_iter = (default_timer() - st_t) / (iteration + 1 - start_iter)
                     est_time_for_epo = avg_time_per_iter * (len(train_loader) - iteration)
                     est_time_for_train = (args.epochs - epoch - 1) * len(train_loader) * avg_time_per_iter + est_time_for_epo
+                    log_scalars.update({
+                        'est_remain_time': est_time_for_train
+                    })
                     print('*%s* ' % run_id,
                           time.strftime('%Y-%m-%d %H:%M:%S', time.localtime()),
                           'Epoch %d Steps %d, Total time %.2f, data %.2f%%. Loss %.3e lr %.3e' % (epoch, iteration,
@@ -474,8 +483,10 @@ def main():
                                                                                          loss,
                                                                                          lr),
                           end='\n')
-                    print('Estimated time for epoch: %.2f, Estimated time for training: %.2f' % (
-                        est_time_for_epo, est_time_for_train))
+                    print('Estimated time for epoch (H/M/S): %s, Estimated time for training (H/M/S): %s' % (
+                        str(datetime.timedelta(seconds=est_time_for_epo)),
+                        str(datetime.timedelta(seconds=est_time_for_train))),
+                          end='\r')
                     if not args.debug:
                         writer.add_image('train/img1', visualize_3d(fixed[0, 0]), epoch * len(train_loader) + iteration)
                         writer.add_image('train/img2', visualize_3d(moving[0, 0]), epoch * len(train_loader) + iteration)

@@ -1,7 +1,8 @@
 import torch
 import torch.nn.functional as F
+from tools.utils import find_surf
 
-def sim_loss(fixed, warped, soft_mask = None):
+def similarity(fixed, warped, soft_weight = None):
     """
     Compute pearson correlation between two tensors.
     TODO: Add soft mask support.
@@ -9,7 +10,7 @@ def sim_loss(fixed, warped, soft_mask = None):
     Args:
         fixed: (N, C, H, W, S), torch.Tensor, fixed image
         warped: (N, C, H, W, S), torch.Tensor, warped image
-        soft_mask: (N, 1, H, W, S), torch.Tensor, soft mask, weights for each voxel
+        soft_weight: (N, 1, H, W, S), torch.Tensor, soft mask, weights for each voxel
 
     Returns:
         loss: (N,), torch.Tensor, pearson correlation loss
@@ -22,19 +23,50 @@ def sim_loss(fixed, warped, soft_mask = None):
     var1 = torch.mean((flatten_fixed - mean1) ** 2, dim=1, keepdim=True)
     var2 = torch.mean((flatten_warped - mean2) ** 2, dim=1, keepdim=True)
 
-    if soft_mask is not None:
-        soft_mask = torch.flatten(soft_mask, start_dim=1)
+    if soft_weight is not None:
+        soft_weight = torch.flatten(soft_weight, start_dim=1)
     else:
-        soft_mask = 1
-    cov12 = torch.mean((flatten_fixed - mean1) * (flatten_warped - mean2), dim=1, keepdim=True)
+        soft_weight = var1.new_ones((1,1)) 
+    cov12 = torch.mean((flatten_fixed - mean1) * (flatten_warped - mean2) * soft_weight, dim=1, keepdim=True)
     eps = 1e-6
-    pearson_r = cov12 / torch.sqrt((var1 + eps) * (var2 + eps))
+    pearson_r = cov12 / torch.sqrt((var1 + eps) * (var2 + eps)) / torch.mean(soft_weight, dim=1, keepdim=True)
+
+    return pearson_r
+
+def sim_loss(fixed, warped, soft_weight = None):
+    """
+    Compute pearson correlation between two tensors.
+    TODO: Add soft mask support.
+
+    Args:
+        fixed: (N, C, H, W, S), torch.Tensor, fixed image
+        warped: (N, C, H, W, S), torch.Tensor, warped image
+        soft_weight: (N, 1, H, W, S), torch.Tensor, soft mask, weights for each voxel
+
+    Returns:
+        loss: (N,), torch.Tensor, pearson correlation loss
+    """
+    flatten_fixed = torch.flatten(fixed, start_dim=1)
+    flatten_warped = torch.flatten(warped, start_dim=1)
+
+    mean1 = torch.mean(flatten_fixed, dim=1, keepdim=True)
+    mean2 = torch.mean(flatten_warped, dim=1, keepdim=True)
+    var1 = torch.mean((flatten_fixed - mean1) ** 2, dim=1, keepdim=True)
+    var2 = torch.mean((flatten_warped - mean2) ** 2, dim=1, keepdim=True)
+
+    if soft_weight is not None:
+        soft_weight = torch.flatten(soft_weight, start_dim=1)
+    else:
+        soft_weight = var1.new_ones((1,1)) 
+    cov12 = torch.mean((flatten_fixed - mean1) * (flatten_warped - mean2) * soft_weight, dim=1, keepdim=True)
+    eps = 1e-6
+    pearson_r = cov12 / torch.sqrt((var1 + eps) * (var2 + eps)) / torch.mean(soft_weight, dim=1, keepdim=True)
 
     raw_loss = 1 - pearson_r
     return raw_loss.mean()*4
 
 
-def masked_sim_loss(fixed, warped, mask, soft_mask=None):
+def masked_sim_loss(fixed, warped, mask):
     """
     Compute pearson correlation between two tensors, but mask out some voxels.
     TODO: Add soft mask support.
@@ -217,13 +249,6 @@ def focal_loss(inputs, targets, alpha=0.25, gamma=2):
     pt = torch.where(targets == 1, inputs, 1 - inputs)
     F_loss = alpha * (1-pt)**gamma * (-torch.log(pt))
     return F_loss.mean()
-
-def find_surf(seg, n=3):
-    '''seg: (**,D,H,W)
-    '''
-    pads = tuple((n-1)//2 for _ in range(6))
-    seg = F.pad(seg, pads, mode='constant', value=0).unfold(2, n, 1).unfold(3, n, 1).unfold(4, n, 1)
-    return seg.sum(dim=(-1,-2,-3)) < n**3
 
 def ret_surf_points(surf_p, max_num = None):
     '''surf_p: (b, c, d, h, w), binary map of whether suface
