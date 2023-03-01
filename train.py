@@ -34,41 +34,45 @@ parser.add_argument('-cf', "--checkpoint_frequency", default=0.5, type=float)
 parser.add_argument('-c', "--checkpoint", type=str, default=None)
 parser.add_argument('-ct', '--continue_training', action='store_true')
 parser.add_argument('--ctt', '--continue_training_this', type=str, default=None)
-parser.add_argument('--fixed_sample', type=int, default=100)
 parser.add_argument('-g', '--gpu', type=str, default='', help='GPU to use')
 parser.add_argument('-d', '--dataset', type=str, default='datasets/liver_cust.json', help='Specifies a data config')
 parser.add_argument("-ts", "--training_scheme", type=lambda x:int(x) if x.isdigit() else x, default='', help='Specifies a training scheme')
 parser.add_argument('-vs', '--val_scheme', type=lambda x:int(x) if x.isdigit() else x, default='', help='Specifies a validation scheme')
-parser.add_argument('-aug', '--augment', default=False, type=lambda x: x.lower() in ['true', '1', 't', 'y', 'yes'], help='Augment data')
-parser.add_argument('--lr', type=float, default=1e-4)
-parser.add_argument('--lr_scheduler', default = 'step', type=str, help='lr scheduler', choices=['linear', 'step', 'cosine'])
 parser.add_argument('--debug', action='store_true', help="run the script without saving files")
 parser.add_argument('--name', type=str, default='')
+
+parser.add_argument('--lr_scheduler', default = 'step', type=str, help='lr scheduler', choices=['linear', 'step', 'cosine'])
+parser.add_argument('--lr', type=float, default=1e-4)
+parser.add_argument('-aug', '--augment', default=False, type=lambda x: x.lower() in ['true', '1', 't', 'y', 'yes'], help='Augment data')
+parser.add_argument('-ic', '--in_channel', default=2, type=int, help='Input channel number')
+# losses
 parser.add_argument('--ortho', type=float, default=0.1, help="use ortho loss")
 parser.add_argument('--det', type=float, default=0.1, help="use det loss")
 parser.add_argument('--reg', type=float, default=1, help="use reg loss")
+parser.add_argument('-inv', '--invert_loss', action='store_true', help="invertibility loss")
+parser.add_argument('--surf_loss', default=0, type=float, help='Surface loss weight')
+parser.add_argument('-dc', '--dice_loss', default=0, type=float, help='Dice loss weight')
+# for stage1 masks
 parser.add_argument('-m', '--masked', choices=['soft', 'seg', 'hard'], default='',
      help="mask the tumor part when calculating similarity loss")
 parser.add_argument('-mt', '--mask_threshold', type=float, default=1.5, help="volume changing threshold for mask")
 parser.add_argument('-mn', '--masked_neighbor', type=int, default=3, help="for masked neibor calculation")
-parser.add_argument('-vp', '--vol_preserve', type=float, default=0, help="use volume-preserving loss")
-parser.add_argument('-st', '--size_type', choices=['organ', 'tumor', 'tumor_gt', 'constant', 'dynamic', 'reg'], default='tumor', help = 'organ means VP works on whole organ, tumor means VP works on tumor region, tumor_gt means VP works on tumor region with ground truth, constant means VP ratio is a constant, dynamic means VP has dynamic weight, reg means VP is replaced by reg loss')
-parser.add_argument('--ks_norm', default='voxel', choices=['image', 'voxel'])
-parser.add_argument('-w_ksv', '--w_ks_voxel', default=1, type=float, help='Weight for voxel method in ks loss')
-parser.add_argument('-s1r', '--stage1_rev', type=lambda x: x.lower() in ['true', '1', 't', 'y', 'yes'], default=False, help="whether to use reverse flow in stage 1")
-parser.add_argument('-inv', '--invert_loss', action='store_true', help="invertibility loss")
-parser.add_argument('--surf_loss', default=0, type=float, help='Surface loss weight')
-parser.add_argument('-dc', '--dice_loss', default=0, type=float, help='Dice loss weight')
-parser.add_argument('-ic', '--in_channel', default=2, type=int, help='Input channel number')
 parser.add_argument('-trsf', '--soft_transform', default='sigm', type=str, help='Soft transform')
 parser.add_argument('-bnd_thick', '--boundary_thickness', default=0.5, type=float, help='Boundary thickness')
 parser.add_argument('-use2', '--use_2nd_flow', default=False, type=lambda x: x.lower() in ['true', '1', 't', 'y', 'yes'], help='Use 2nd flow')
 parser.add_argument('-pc', '--pre_calc', default=False, type=lambda x: x.lower() in ['true', '1', 't', 'y', 'yes'], help='Pre-calculate the flow')
+parser.add_argument('-s1r', '--stage1_rev', type=lambda x: x.lower() in ['true', '1', 't', 'y', 'yes'], default=False, help="whether to use reverse flow in stage 1")
+parser.add_argument('-os', '--only_shrink', type=lambda x: x.lower() in ['true', '1', 't', 'y', 'yes'], default=True, help="whether to only use shrinkage in stage 1")
+# for VP loss
+parser.add_argument('-vp', '--vol_preserve', type=float, default=0, help="use volume-preserving loss")
+parser.add_argument('-st', '--size_type', choices=['organ', 'tumor', 'tumor_gt', 'constant', 'dynamic', 'reg'], default='tumor', help = 'organ means VP works on whole organ, tumor means VP works on tumor region, tumor_gt means VP works on tumor region with ground truth, constant means VP ratio is a constant, dynamic means VP has dynamic weight, reg means VP is replaced by reg loss')
+parser.add_argument('--ks_norm', default='voxel', choices=['image', 'voxel'])
+parser.add_argument('-w_ksv', '--w_ks_voxel', default=1, type=float, help='Weight for voxel method in ks loss')
+
 # mask calculation needs an extra mask as input
 parser.set_defaults(in_channel=3 if parser.parse_args().masked else 2)
 parser.set_defaults(stage1_rev=True if parser.parse_args().base_network == 'VXM' else False)
 parser.set_defaults(n_cascades=1 if parser.parse_args().base_network != 'VTN' else 3)
-
 
 args = parser.parse_args()
 # if args.gpu:
@@ -403,11 +407,11 @@ def main():
                     with torch.no_grad():  
                         vp_seg = F.interpolate(w_seg2, size=det_flow.shape[-3:], mode='trilinear', align_corners=False).float().squeeze().round().long() # B, S, H, W
                         img_dict['det_flow'] = visualize_3d(det_flow[0]).cpu()
-                        img_dict['det_flow_on_seg2'] = visualize_3d(draw_seg_on_vol(det_flow[0], vp_seg[0], to_onehot=True)).cpu()
                     if args.ks_norm=='voxel':
                         adet_flow = torch.where(det_flow>1, det_flow, (1/det_flow))
                         k_sz_voxel = (adet_flow*vp_mask).sum()/vp_mask.sum()
                         img_dict['vp_det_flow'] = visualize_3d(adet_flow[0]).cpu()
+                        img_dict['vpdetflow_on_seg2'] = visualize_3d(draw_seg_on_vol(adet_flow[0], vp_seg[0], to_onehot=True)).cpu()
                     elif args.ks_norm=='image':
                         # normalize loss for every image
                         k_sz_voxel = (torch.where(det_flow>1, det_flow, 1/det_flow)*(vp_mask)).sum(dim=(-1,-2,-3))
@@ -610,8 +614,12 @@ def main():
 if __name__ == '__main__':
     try:
         main()
+    except KeyboardInterrupt:
+        # rename log_dir
+        log_dir = args.log_dir
+        os.rename(log_dir, log_dir+'_interrupted')
     except Exception as e:
         # rename log_dir
         log_dir = args.log_dir
-        os.rename(log_dir, log_dir+'_unfinished')
+        os.rename(log_dir, log_dir+'_error')
         raise e
