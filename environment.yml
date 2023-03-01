@@ -1,0 +1,33 @@
+name: main
+channels:
+  - annaconda
+  - defaults
+  - conda-forge
+dependencies:
+  - python
+  - torchvision
+  - torchaudio
+  - pytorch
+  - cudatoolkit=11.3
+  - h5py
+  - matplotlib
+  - debugpy
+  - ipython
+  - tensorboard
+  - tqdm
+  - ipykernel
+  # - cupy
+  - monai
+  - scikit-image
+  - ipympl
+  - jupyterlab
+  - einops
+  # - mayavi
+  # - pytorch-cluster
+  - faiss-gpu
+  # - nvcc_linux-64
+  - nibabel
+  - ipdb
+  # - conda=23.1.0
+  - simpleitk
+prefix: /home/hynx/miniconda3/envs/main
