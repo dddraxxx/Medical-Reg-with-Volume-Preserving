@@ -287,30 +287,31 @@ def main():
             warped = [i[:, :-1] for i in warped_] if args.in_channel>2 else warped_
 
             # affine loss
-            ortho_factor, det_factor = args.ortho, args.det
-            A = affine_params['theta'][..., :3, :3]
-            ort = ortho_factor * ortho_loss(A)
-            det = det_factor * det_loss(A)
-            with torch.no_grad():
-                # w_seg2 is always float type
-                w_seg2 = mmodel.reconstruction(seg2.float(), agg_flows[-1])
-                # warped_tseg represents the tumor region in the warped image, boolean type
-                warped_tseg = w_seg2>1.5
-                # w_oseg represents the organ region in the warped image, float type
-                w_oseg = mmodel.reconstruction((seg2>0.5).float(), agg_flows[-1])
-                # add log scalar tumor/ratio
-                if (seg2>1.5).sum().item() > 0:
-                    t_c = (warped_tseg.sum(dim=(1,2,3,4)).float() / (seg2 > 1.5).sum(dim=(1,2,3,4)).float())
-                    t_c_nn = t_c[t_c.isnan()==False]
-                    log_scalars['tumor_change'] = t_c_nn.mean().item()
-                    o_c = (w_seg2>0.5).sum(dim=(1,2,3,4)).float() / (seg2 > 0.5).sum(dim=(1,2,3,4)).float()
-                    o_c_nn = o_c[t_c.isnan()==False]
-                    log_scalars['organ_change'] = o_c_nn.mean().item()
-                    log_scalars['to_ratio'] = torch.where(t_c_nn/o_c_nn >1, t_c_nn/o_c_nn, o_c_nn/t_c_nn).mean().item()
+            if args.use_affine:
+                ortho_factor, det_factor = args.ortho, args.det
+                A = affine_params['theta'][..., :3, :3]
+                ort = ortho_factor * ortho_loss(A)
+                det = det_factor * det_loss(A)
+                with torch.no_grad():
+                    # w_seg2 is always float type
+                    w_seg2 = mmodel.reconstruction(seg2.float(), agg_flows[-1])
+                    # warped_tseg represents the tumor region in the warped image, boolean type
+                    warped_tseg = w_seg2>1.5
+                    # w_oseg represents the organ region in the warped image, float type
+                    w_oseg = mmodel.reconstruction((seg2>0.5).float(), agg_flows[-1])
+                    # add log scalar tumor/ratio
+                    if (seg2>1.5).sum().item() > 0:
+                        t_c = (warped_tseg.sum(dim=(1,2,3,4)).float() / (seg2 > 1.5).sum(dim=(1,2,3,4)).float())
+                        t_c_nn = t_c[t_c.isnan()==False]
+                        log_scalars['tumor_change'] = t_c_nn.mean().item()
+                        o_c = (w_seg2>0.5).sum(dim=(1,2,3,4)).float() / (seg2 > 0.5).sum(dim=(1,2,3,4)).float()
+                        o_c_nn = o_c[t_c.isnan()==False]
+                        log_scalars['organ_change'] = o_c_nn.mean().item()
+                        log_scalars['to_ratio'] = torch.where(t_c_nn/o_c_nn >1, t_c_nn/o_c_nn, o_c_nn/t_c_nn).mean().item()
 
-                # add log scalar dice_organ
-                dice_organ, _ = dice_jaccard(w_seg2>0.5, seg1>0.5)
-                log_scalars['dice_organ'] = dice_organ.mean().item()
+                    # add log scalar dice_organ
+                    dice_organ, _ = dice_jaccard(w_seg2>0.5, seg1>0.5)
+                    log_scalars['dice_organ'] = dice_organ.mean().item()
 
             # sim and reg loss
             # default masks used for VP loss

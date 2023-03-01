@@ -17,16 +17,16 @@ class RecursiveCascadeNetwork(nn.Module):
         in_channels (int): The number of input channels.
         compute_mask (bool): Whether to compute the mask before registration by using the pre-registration module.
     """
-    def __init__(self, n_cascades, im_size=(512, 512), base_network='VTN', in_channels=2, compute_mask=False):
+    def __init__(self, n_cascades, im_size=(512, 512), base_network='VTN', in_channels=2, use_affine=True):
         super(RecursiveCascadeNetwork, self).__init__()
         self.n_casescades = n_cascades
         self.im_size = im_size
-        self.compute_mask = compute_mask
 
         device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         self.stems = nn.ModuleList()
         # See note in base_networks.py about the assumption in the image shape
-        self.stems.append(VTNAffineStem(dim=len(im_size), im_size=im_size[0], in_channels=in_channels))
+        if use_affine:
+            self.stems.append(VTNAffineStem(dim=len(im_size), im_size=im_size[0], in_channels=in_channels))
         assert base_network in BASE_NETWORK
         base = eval(base_network)
         for i in range(n_cascades):
@@ -111,14 +111,20 @@ class RecursiveCascadeNetwork(nn.Module):
         flows = []
         stem_results = []
         agg_flows = []
-        # Affine registration
-        flow, affine_params = self.stems[0](fixed, moving)
-        # affine_params['theta'] = flow.new_tensor([[1, 0, 0, 0], [0, 1, 0, 0], [0, 0, 1, 0]]).float()[None].repeat(fixed.size(0), 1, 1)
-        stem_results.append(self.reconstruction(moving, flow))
-        aflow = flow
-        flows.append(flow)
         neg_flow = None
-        # agg_flows.append(flow)
+        if self.use_affine:
+            # Affine registration
+            flow, affine_params = self.stems[0](fixed, moving)
+            # affine_params['theta'] = flow.new_tensor([[1, 0, 0, 0], [0, 1, 0, 0], [0, 0, 1, 0]]).float()[None].repeat(fixed.size(0), 1, 1)
+            stem_results.append(self.reconstruction(moving, flow))
+            aflow = flow
+            flows.append(flow)
+            # agg_flows.append(flow)
+        else:
+            flow = self.stems[0](fixed, moving, return_neg=return_neg)
+            stem_results.append(self.reconstruction(moving, flow))
+            aflow = flow
+            flows.append(flow)
         if return_neg:
             neg_flow = self.stems[0].neg_flow(affine_params['theta'], moving.size())
         for model in self.stems[1:]: # cascades
@@ -136,7 +142,7 @@ class RecursiveCascadeNetwork(nn.Module):
                 del neg_fl
                 flow = flow[0]
             flows.append(flow)
-            if len(agg_flows) == 1:
+            if len(agg_flows) == 1 and self.use_affine:
                 theta = affine_params['theta']
                 A = theta[:, :3, :3]
                 agg_flow = flows[0] + torch.einsum('bij, bjxyz -> bixyz', A, flow)
