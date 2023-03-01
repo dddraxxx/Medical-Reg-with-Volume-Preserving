@@ -1,3 +1,4 @@
+import traceback
 import h5py
 from timeit import default_timer
 import json
@@ -108,8 +109,9 @@ def main():
                        str(train_scheme) + ('pc' if args.pre_calc else ''), # what dataset to use and whether to pre-calculate the flow
                        args.base_network+'x'+str(args.n_cascades), # base network and number of cascades
                        args.name, 
-                       args.soft_transform+'bnd'+str(args.boundary_thickness)+'st{}'.format(1+args.use_2nd_flow) 
-                       if args.masked in ['soft', 'hard'] else args.masked,             # params for transforming jacobian
+                       args.masked + (f'thr{args.mask_threshold}' + args.soft_transform+'bnd'+str(args.boundary_thickness)+'st{}'.format(1+args.use_2nd_flow) 
+                       if args.mask_threshold>0 and args.masked in ['soft', 'hard']  
+                       else ''), # params for transforming jacobian
                        'vp'+str(args.vol_preserve)+'st'+args.size_type if args.vol_preserve>0 else '' # params for volume preserving loss
                        ])
     args.run_id = run_id
@@ -146,6 +148,7 @@ def main():
             # also save the code to the log dir
             import shutil
             shutil.copyfile(os.path.realpath(__file__), log_dir+'/training_code.py')
+        args.log_dir = log_dir
     if args.debug:
         # torch.autograd.set_detect_anomaly(True)
         pass
@@ -605,4 +608,10 @@ def main():
         start_iter = 0
 
 if __name__ == '__main__':
-    main()
+    try:
+        main()
+    except Exception as e:
+        # rename log_dir
+        log_dir = args.log_dir
+        os.rename(log_dir, log_dir+'_unfinished')
+        raise e

@@ -39,6 +39,19 @@ class PreRegister(nn.Module):
             s1_flow = s1_agg_flows[-1]
             w_template_seg = stage1_model.reconstruction(template_seg.expand_as(template_input), s1_flow)
             mask_moving = w_template_seg
+        
+        if cfg.mask_threshold < 0: # which means that it do not want tumor mask
+            input_seg = mask_moving
+            compute_mask = mask_moving.new_zeros(mask_moving.shape)
+            returns = (input_seg, compute_mask)
+            if training:
+                img_dict['input_seg'] = visualize_3d(input_seg[0,0])
+                # move all to cpu
+                log_scalars = {k: v.item() for k, v in log_scalars.items()}
+                img_dict = {k: v.cpu() for k, v in img_dict.items()}
+                return *returns, log_scalars, img_dict
+            return returns
+            
         def warp(fixed, moving, seg, reg_model):
             """ Warp moving image to fixed image, and return warped seg """
             with torch.no_grad():

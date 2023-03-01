@@ -11,8 +11,8 @@ parser.add_argument('-d', '--dataset', type= lambda x: {
                     , default='liver', help='brain or liver')
 ### Use Normal? Seg?  or adaptive? or hard?
 parser.add_argument('-m', '--mode', type=lambda x: {
-                        'normal': 'normal', 'seg': 'seg', 'adaptive': 'adaptive',
-                        'n': 'normal', 's': 'seg', 'a': 'adaptive',
+                        'normal': 'normal', 'seg': 'seg', 'adaptive': 'adaptive', 'organ': 'unsup-organ',
+                        'n': 'normal', 's': 'seg', 'a': 'adaptive', 'o': 'unsup-organ',
                     }[x.lower()]
                     , default='', help='normal or seg or adaptive')
 ### Normal training or Mini Experiments
@@ -40,9 +40,14 @@ elif args.mode == 'adaptive':
     command['-trsf'] = 'sigm'
     command['-use2'] = '0'
     command['-bnd_thick'] = '0.5'
+    command['--mask_threshold'] = '1.5'
     command['-vp'] = '0.1'
     command['-st'] = 'dynamic'
-    command['--mask_threshold'] = '1.5'
+elif args.mode == 'unsup-organ':
+    command['-m'] = 'hard'
+    command['--mask_threshold'] = '-1'
+    command['-vp'] = '0.1'
+    command['-st'] = 'organ'
 
 if args.type == 'normal':
     pass
