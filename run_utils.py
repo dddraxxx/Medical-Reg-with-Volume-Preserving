@@ -3,23 +3,27 @@ import torch
 import numpy as np
 from tools.utils import *
 
+stage1_cfg = {
+    'liver': {
+        'VTN': '/home/hynx/regis/recursive-cascaded-networks/logs/liver/VTN/1/Jan08_180325_normal-vtn',
+        'VXM': '/home/hynx/regis/recursive-cascaded-networks/logs/liver/VXM/1/Jan08_175614_normal-vxm',
+    },
+    'brain': {
+        'VTN': '/home/hynx/regis/recursive-cascaded-networks/logs/brain/VTN/Feb27_034554_br-normal',
+        'VXM': '',
+    },
+}
+import os
+for i in stage1_cfg:
+    for j in stage1_cfg[i]:
+        stage1_cfg[i][j] = os.path.realpath(stage1_cfg[i][j])
+
 def build_precompute(model, dataset, cfg):
     template = list(dataset.subset['temp'].values())[0]
     template_image, template_seg = template['volume'], template['segmentation']
     template_image = torch.tensor(np.array(template_image).astype(np.float32)).unsqueeze(0).unsqueeze(0).cuda()/255.0
     template_seg = torch.tensor(np.array(template_seg).astype(np.float32)).unsqueeze(0).unsqueeze(0).cuda()
-    if cfg.data_type == 'liver':
-        if cfg.base_network == 'VTN':
-            state_path = '/home/hynx/regis/recursive-cascaded-networks/logs/liver/VTN/Jan08_180325_normal-vtn'
-        elif cfg.base_network == 'VXM':
-            # state_path = '/home/hynx/regis/recursive-cascaded-networks/logs/Jan08_180325_normal-vtn'
-            state_path = '/home/hynx/regis/recursive-cascaded-networks/logs/liver/VXM/Jan08_175614_normal-vxm'
-    elif cfg.data_type == 'brain':
-        if cfg.base_network == 'VTN':
-            # state_path = '/home/hynx/regis/recursive-cascaded-networks/logs/brain/VTN/Feb27_034554_br-normal'
-            state_path = '/home/hynx/regis/recursive-cascaded-networks/logs/brain/VTN/mini/Mar01-165553_mini_VTNx3_br-normal'
-        elif cfg.base_network == 'VXM':
-            state_path = ''
+    state_path = stage1_cfg[cfg.data_type][cfg.base_network]
     if cfg.stage1_rev:
         print('using rev_flow')
     model.build_preregister(template_image, template_seg, state_path, cfg.base_network)

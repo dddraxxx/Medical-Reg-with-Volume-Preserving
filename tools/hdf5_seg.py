@@ -77,7 +77,7 @@ def normalize_mri(data, seg, non_zero=True):
     if non_zero:
         mask = seg >= 0
         data[mask] = (data[mask] - data[mask].mean()) / (data[mask].std() + 1e-8)
-        data[mask == 0] = 0
+        data[mask == 0] = data[mask].min()-0.1
     else:
         mn = data.mean()
         std = data.std()
@@ -164,7 +164,11 @@ def visual_h5(h5_path):
             # visualize_3d(seg, save_name = dir / f'{id}_seg.jpg', figsize=(10, 10))
             # # overlay img and seg
             # visualize_3d(img[None ], save_name = dir / f'{id}_img_seg.jpg', label=seg[None], figsize=(10, 10))
-            combo_imgs(img, seg, draw_seg_on_vol(img, seg)).save(dir_path / f'{id}_img.jpg')
+            import torch
+            img = torch.from_numpy(img)
+            seg = torch.from_numpy(seg)
+            combo_imgs(img, seg, draw_seg_on_vol(img, seg.long(), to_onehot=True)
+                       ).save(dir_path / f'{id}_img.jpg')
             bar.set_description(f'visualizing {id} as' + f' {dir_path / f"{id}_img.jpg"}')
 
 # visualize original ct data
@@ -289,7 +293,7 @@ def store_segs_lits(h5_path, selected=np.s_[:]):
             f[group].create_dataset('segmentation', data=seg, dtype='uint8')
 
 # assign seg according to group id/segmentation in hdf5 file
-def store_segs_brats(h5_path, selected=np.s_[:], cropped_data='/mnt/sdb/nnUNet/nnUNet_cropped_data/Task082_BraTS2020/', mod=1):
+def store_segs_brats(h5_path, selected=np.s_[:], cropped_data='/mnt/sdb/nnUNet/nnUNet_cropped_data/Task082_BraTS2020/', mod=1, lab=1):
     """
     We select T1 modality for training. Every data is resized to (128, 128, 128).
     """
@@ -298,19 +302,24 @@ def store_segs_brats(h5_path, selected=np.s_[:], cropped_data='/mnt/sdb/nnUNet/n
     # create h5 and put data and seg in it
     with h5py.File(h5_path, 'w') as f:
         for id in ids[selected]:
+        # for id in ids[selected][:5]:
             print('id', id)
             data_path = all_data[id-1]
             data = np.load(data_path)['data']
             seg = data[-1]
             img = data[mod]
-            
             seg = resize_data(seg, (128, 128, 128), is_seg=True)
             img = resize_data(img, (128, 128, 128), is_seg=False)
 
             # remove background, and set tumor to 2
             img = normalize_mri(img, seg)
-            seg[seg>0] = 2
-            seg[seg==0] = 1
+            if isinstance(lab, int):
+                seg[seg==lab] = -10
+            else:
+                for l in lab:
+                    seg[seg==l] = -10
+            seg[seg>=0] = 1
+            seg[seg==-10] = 2
             seg[seg==-1] = 0
 
             data = img
@@ -402,8 +411,8 @@ def store_dicom_h5(h5_path, path = '/mnt/sdc/qhd/nbia/Duke-Breast-Cancer-MRI'):
 
 if __name__=='__main__':
     # store_segs('/home/hynx/regis/Recursive-Cascaded-Networks/datasets/lits.h5')#, selected=np.s_[128:129])
-    store_segs_brats('/home/hynx/regis/Recursive-Cascaded-Networks/datasets/brats_flair.h5', mod=3)
-    visual_h5('/home/hynx/regis/Recursive-Cascaded-Networks/datasets/brats_flair.h5')
+    # store_segs_brats('/home/hynx/regis/Recursive-Cascaded-Networks/datasets/brats_t1_23.h5', mod=0, lab=[2,3])
+    # visual_h5('/home/hynx/regis/Recursive-Cascaded-Networks/datasets/brats_t1_23.h5')
     # visual_h5('/home/hynx/regis/Recursive-Cascaded-Networks/datasets/lits.h5')
     # visual_h5('/home/hynx/regis/Recursive-Cascaded-Networks/datasets/lspig_val.h5')
     # visual_h5('/home/hynx/regis/Recursive-Cascaded-Networks/datasets/lits_paste.h5')

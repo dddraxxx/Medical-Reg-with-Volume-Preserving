@@ -5,7 +5,6 @@ from tools.utils import *
 from tools.visualization import plot_to_PIL
 import os
 from metrics.losses import jacobian_det
-import wandb
 
 class PreRegister(nn.Module):
     """
