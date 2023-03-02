@@ -138,7 +138,7 @@ class PyTMinMaxScalerVectorized(object):
         tensor.mul_(scale).sub_(tensor.min(dim=-1, keepdim=True)[0])
         return tensor.view(*s)
 
-def draw_seg_on_vol(data, lb, if_norm=True, alpha=0.3, colors=["green", "red", "blue"], to_onehot=False):
+def draw_seg_on_vol(data, lb, if_norm=True, alpha=0.3, colors=["green", "red", "blue"], to_onehot=False, inter_dst=1):
     """
     Plot a 3D volume with binary segmentation masks overlaid on it.
 
@@ -153,6 +153,8 @@ def draw_seg_on_vol(data, lb, if_norm=True, alpha=0.3, colors=["green", "red", "
     Returns:
         torch.Tensor: Normalized output volume with overlay masks, shape: (S, 3, H, W).
     """
+    data = data[...,::inter_dst,:,:]
+    lb = lb[...,::inter_dst,:,:]
     if to_onehot:
         # check lb type long
         assert lb.dtype == torch.long or np.issubdtype(lb.dtype, np.integer), "lb should be integer"
