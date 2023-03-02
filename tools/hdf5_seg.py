@@ -299,6 +299,8 @@ def store_segs_brats(h5_path, selected=np.s_[:], cropped_data='/mnt/sdb/nnUNet/n
     """
     all_data = sorted(pa(cropped_data).glob('Bra*.npz'))
     ids = range(1, len(all_data)+1)
+    import os
+    h5_path = os.path.realpath(h5_path)
     # create h5 and put data and seg in it
     with h5py.File(h5_path, 'w') as f:
         for id in ids[selected]:
@@ -411,8 +413,8 @@ def store_dicom_h5(h5_path, path = '/mnt/sdc/qhd/nbia/Duke-Breast-Cancer-MRI'):
 
 if __name__=='__main__':
     # store_segs('/home/hynx/regis/Recursive-Cascaded-Networks/datasets/lits.h5')#, selected=np.s_[128:129])
-    # store_segs_brats('/home/hynx/regis/Recursive-Cascaded-Networks/datasets/brats_t1_23.h5', mod=0, lab=[2,3])
-    # visual_h5('/home/hynx/regis/Recursive-Cascaded-Networks/datasets/brats_t1_23.h5')
+    store_segs_brats('/home/hynx/regis/recursive-cascaded-networks/datasets/brats_t1_123.h5', mod=0, lab=[1,2,3])
+    visual_h5('/home/hynx/regis/recursive-cascaded-networks/datasets/brats_t1_123.h5')
     # visual_h5('/home/hynx/regis/Recursive-Cascaded-Networks/datasets/lits.h5')
     # visual_h5('/home/hynx/regis/Recursive-Cascaded-Networks/datasets/lspig_val.h5')
     # visual_h5('/home/hynx/regis/Recursive-Cascaded-Networks/datasets/lits_paste.h5')

@@ -52,13 +52,16 @@ GPU_ID = subprocess.getoutput('nvidia-smi --query-gpu=memory.free --format=csv,n
 print('Using GPU', GPU_ID)
 os.environ['CUDA_VISIBLE_DEVICES'] = GPU_ID
 
+# resolve checkpoint path to realpath 
+args.checkpoint = pa(args.checkpoint).resolve().__str__()
+
 def main():
     # update args with checkpoint args but do not overwrite
     model_path = args.checkpoint
-    args_training = read_cfg(model_path)
-    for k, v in args_training.items():
-        if not hasattr(args, k):
-            setattr(args, k, v)
+    cfg_training = read_cfg(model_path)
+    # for k, v in cfg.items():
+    #     if not hasattr(args, k):
+    #         setattr(args, k, v)
     # read config
     with open(args.dataset, 'r') as f:
         cfg = json.load(f)
@@ -69,7 +72,7 @@ def main():
     val_dataset = Data(args.dataset, scheme=args.val_subset or Split.VALID)
     val_loader = DataLoader(val_dataset, batch_size=args.batch_size, num_workers=min(8, args.batch_size), shuffle=False)
     # build framework
-    model = RecursiveCascadeNetwork(n_cascades=args.n_cascades, im_size=image_size, base_network=args.base_network, in_channels=2+bool(args.masked)).cuda()
+    model = RecursiveCascadeNetwork(n_cascades=cfg_training.n_cascades, im_size=image_size, base_network=cfg_training.base_network, in_channels=2+bool(cfg_training.masked)).cuda()
     # add checkpoint loading
     from tools.utils import load_model, load_model_from_dir
     if os.path.isdir(args.checkpoint):
@@ -86,10 +89,11 @@ def main():
     print('will save to', output_fname)
 
     # stage 1 model setup
-    if args.masked in ['soft', 'hard']:
-        data_type = 'liver' if 'liver' in args.dataset else 'brain'
-        args.data_type = data_type
-        build_precompute(model, val_dataset, args)
+    if cfg_training.masked in ['soft', 'hard']:
+        # suppose the training dataset has the same data type of eval dataset
+        data_type = 'liver' if 'liver' in cfg_training.dataset else 'brain'
+        cfg_training.data_type = data_type
+        build_precompute(model, val_dataset, cfg_training)
 
     # run val
     model.eval()
@@ -141,14 +145,16 @@ def main():
             with torch.no_grad():
                 fixed = fixed.cuda()
                 moving = moving.cuda()
-                if args.masked =='seg':
+                if cfg_training.masked =='seg':
                     moving_ = torch.cat([moving, seg2.float().cuda()], dim=1)
-                elif args.masked  in ['soft' , 'mask']:
-                    input_seg, compute_mask = model.pre_register(fixed, moving, seg2, training=False, cfg=args)
+                elif cfg_training.masked  in ['soft' , 'mask']:
+                    input_seg, compute_mask = model.pre_register(fixed, moving, seg2, training=False, cfg=cfg_training)
                     moving_ = torch.cat([moving, input_seg.float().cuda()], dim=1)
                 else:
                     moving_ = moving
-                warped_, flows, agg_flows, affine_params = model(fixed, moving_, return_affine=True, return_neg=args.reverse)
+                warped_, flows, agg_flows, affine_params = model(fixed, moving_, return_affine=True)
+                    # do we need rev flow any more?
+                    # , return_neg=args.reverse)
                 warped = [i[:,:1,...] for i in warped_]
                 w_seg2 = model.reconstruction(seg2.float().cuda(), agg_flows[-1].float())
             

@@ -9,7 +9,7 @@ stage1_cfg = {
         'VXM': '/home/hynx/regis/recursive-cascaded-networks/logs/liver/VXM/1/Jan08_175614_normal-vxm',
     },
     'brain': {
-        'VTN': '/home/hynx/regis/recursive-cascaded-networks/logs/brain/VTN/Feb27_034554_br-normal',
+        'VTN': '/home/hynx/regis/recursive-cascaded-networks/logs/brain/VTN/mini/Mar02-151627_brmini_VTNx3_normal__',
         'VXM': '',
     },
 }
@@ -39,6 +39,8 @@ def read_cfg(model_path):
     cfg = cfg.replace("'", '"')
     cfg = eval(cfg)
     cfg['name'] = name
+    import ml_collections
+    cfg = ml_collections.ConfigDict(cfg)
     print(cfg)
     return cfg
 

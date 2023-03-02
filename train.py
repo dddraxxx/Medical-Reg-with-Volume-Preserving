@@ -1,3 +1,4 @@
+import hashlib
 from pathlib import Path as pa
 import traceback
 import h5py
@@ -71,6 +72,8 @@ parser.add_argument('--ks_norm', default='voxel', choices=['image', 'voxel'])
 parser.add_argument('-w_ksv', '--w_ks_voxel', default=1, type=float, help='Weight for voxel method in ks loss')
 # network structure
 parser.add_argument('-ua', '--use_affine', type=lambda x: x.lower() in ['true', '1', 't', 'y', 'yes'], default=True, help="whether to use affine transformation")
+# log option
+parser.add_argument('-wb', '--use_wandb', type=lambda x: x.lower() in ['true', '1', 't', 'y', 'yes'], default=True, help="whether to use wandb")
 
 # mask calculation needs an extra mask as input
 parser.set_defaults(in_channel=3 if parser.parse_args().masked else 2)
@@ -133,7 +136,6 @@ def main():
             print("Creating log dir")
             log_dir = os.path.join('./logs', data_type, args.base_network, str(train_scheme), run_id)
             os.path.exists(log_dir) or os.makedirs(log_dir)
-            writer = SummaryWriter(log_dir=log_dir)
             if not os.path.exists(log_dir+'/model_wts/'):
                 print("Creating ckp dir", log_dir)
                 os.makedirs(log_dir+'/model_wts/')
@@ -148,7 +150,6 @@ def main():
                     break
                 f = f.parent
             ckp_dir = log_dir+'/model_wts/'
-            writer = SummaryWriter(log_dir=log_dir)
         # record args
         with open(log_dir+'/args.txt', 'a') as f:
             from pprint import pprint
@@ -162,6 +163,20 @@ def main():
         args.log_dir = log_dir
         args.run_id = run_id
         print('using run_id:', run_id)
+
+        if args.use_wandb:
+            import wandb
+            cfg = args.__dict__
+            # remove cfg name
+            cfg.pop('name')
+            name = args.run_id.split('_')[1:]
+            name = '_'.join(name)
+            # hash run_id into a short string
+            id_for_wandb = hashlib.md5(run_id.encode()).hexdigest()[:8]
+            tags = run_id.split('_') + [data_type, args.base_network, str(train_scheme)]
+            wandb.init(name=name, notes=run_id, sync_tensorboard=True, config=cfg, save_code=True, dir=pa(log_dir).parent, 
+                       resume='allow' if not args.ctt else 'must', id=id_for_wandb, tags=tags)
+        writer = SummaryWriter(log_dir=log_dir)
     if args.debug:
         # torch.autograd.set_detect_anomaly(True)
         pass
@@ -412,9 +427,9 @@ def main():
                     # the vp_loc is a weighted mask that is calculated from the ratio of the tumor region
                     vp_tum_loc = warped_soft_mask # B, C, S, H, W
                 img_dict['vp_loc'] = visualize_3d(vp_tum_loc[0,0]).cpu()
-                img_dict['vp_loc_on_wseg2'] = visualize_3d(draw_seg_on_vol(vp_tum_loc[0,0], 
-                                                                           w_seg2[0,0].round().long(), 
-                                                                           to_onehot=True)).cpu()
+                img_dict['vp_loc_on_wseg2'] = visualize_3d(draw_seg_on_vol(vp_tum_loc[0,0][::5], 
+                                                                           w_seg2[0,0].round().long()[::5], 
+                                                                           to_onehot=True, inter_dst=5), inter_dst=1).cpu()
                 bs = agg_flows[-1].shape[0]
                 # the following line uses mask_fixing and mask_moving to calculate the ratio
                 # ratio = (mask_fixing>.5).view(bs,-1).sum(1)/(mask_moving>.5).view(bs, -1).sum(1); 
@@ -435,7 +450,7 @@ def main():
                         adet_flow = torch.where(det_flow>1, det_flow, (1/det_flow))
                         k_sz_voxel = (adet_flow*vp_mask).sum()/vp_mask.sum()
                         img_dict['vp_det_flow'] = visualize_3d(adet_flow[0]).cpu()
-                        img_dict['vpdetflow_on_seg2'] = visualize_3d(draw_seg_on_vol(adet_flow[0], vp_seg[0], to_onehot=True)).cpu()
+                        img_dict['vpdetflow_on_seg2'] = visualize_3d(draw_seg_on_vol(adet_flow[0], vp_seg[0], to_onehot=True, inter_dst=5), inter_dst=1).cpu()
                     elif args.ks_norm=='image':
                         # normalize loss for every image
                         k_sz_voxel = (torch.where(det_flow>1, det_flow, 1/det_flow)*(vp_mask)).sum(dim=(-1,-2,-3))
@@ -631,6 +646,8 @@ def main():
             t0 = default_timer()   
         scheduler.step()
         start_iter = 0
+    if args.use_wandb:
+        wandb.finish()
 
 if __name__ == '__main__':
     try:
