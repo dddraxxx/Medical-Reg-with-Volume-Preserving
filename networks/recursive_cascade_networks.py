@@ -21,6 +21,9 @@ class RecursiveCascadeNetwork(nn.Module):
         super(RecursiveCascadeNetwork, self).__init__()
         self.n_casescades = n_cascades
         self.im_size = im_size
+        self.use_affine = use_affine
+        self.base_network = base_network
+        self.in_channels = in_channels
 
         device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         self.stems = nn.ModuleList()

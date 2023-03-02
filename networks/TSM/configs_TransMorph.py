@@ -42,7 +42,7 @@ def get_3DTransMorph_config():
     config.if_convskip = True
     config.patch_size = 4
     config.in_chans = 2
-    config.embed_dim = 96
+    config.embed_dim = 48
     config.depths = (2, 2, 4, 2)
     config.num_heads = (4, 4, 8, 8)
     config.window_size = (5, 6, 7)

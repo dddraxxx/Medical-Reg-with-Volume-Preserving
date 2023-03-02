@@ -7,7 +7,9 @@ from torch.distributions.normal import Normal
 from . import layers
 import numpy as np
 
-BASE_NETWORK = ['VTN', 'VXM']
+# from networks.DMR.model import DMR as dmr
+from networks.TSM.TransMorph import CONFIGS as cfg_tsm, TransMorph as tsm
+BASE_NETWORK = ['VTN', 'VXM', 'TSM']
 
 def conv(dim=2):
     if dim == 2:
@@ -464,6 +466,62 @@ class VTNAffineStem(nn.Module):
         # theta: the affine param
         return flow, {'theta': theta}
 
+# class DMR(nn.Module):
+#     '''
+#     DeFormer Registration network. Credit for https://github.com/cjsorange/dmr-deformer.
+#     '''
+#     def __init__(self, im_size=(128,128,128), flow_multiplier=1., layers=3, in_channels=2):
+#         super(DMR, self).__init__()
+#         vol_size = im_size
+#         self.model = dmr(len(vol_size), vol_size, layer=layers)
+#         self.flow_multiplier = flow_multiplier
+    
+#     def forward(self, fixed, moving, return_neg=False):
+#         flow = self.model(fixed, moving)
+#         flow = self.flow_multiplier*flow
+#         return flow * self.flow_multiplier
+    
+class TSM(nn.Module):
+    '''
+    TransfMorph model. Credit for https://github.com/junyuchen245/TransMorph_Transformer_for_Medical_Image_Registration.git.
+    '''
+    '''
+    config:
+        config.if_transskip = True
+        config.if_convskip = True
+        config.patch_size = 4
+        config.in_chans = 2
+        config.embed_dim = 96
+        config.depths = (2, 2, 4, 2)
+        config.num_heads = (4, 4, 8, 8)
+        config.window_size = (5, 6, 7)
+        config.mlp_ratio = 4
+        config.pat_merg_rf = 4
+        config.qkv_bias = False
+        config.drop_rate = 0
+        config.drop_path_rate = 0.3
+        config.ape = False
+        config.spe = False
+        config.rpe = True
+        config.patch_norm = True
+        config.use_checkpoint = False
+        config.out_indices = (0, 1, 2, 3)
+        config.reg_head_chan = 16
+        config.img_size = (160, 192, 224)
+    '''
+    def __init__(self, im_size=(128,128,128), flow_multiplier=1., in_channels=2):
+        super(TSM, self).__init__()
+        config = cfg_tsm['TransMorph']
+        config['img_size'] = im_size
+        config['in_chans'] = in_channels
+        self.model = tsm(config)
+        self.flow_multiplier = flow_multiplier
+    
+    def forward(self, fixed, moving, return_neg=False):
+        x_in = torch.cat((fixed, moving), dim=1)
+        flow = self.model(x_in)
+        flow = self.flow_multiplier*flow
+        return flow * self.flow_multiplier
 
 if __name__ == "__main__":
     vtn_model = VTN()

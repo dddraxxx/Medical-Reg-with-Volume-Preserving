@@ -21,6 +21,12 @@ parser.add_argument('-t', '--type', type= lambda x: {
                         'n': 'normal', 'm': 'mini',
                     }[x.lower()]
                     , default='normal', help='normal or mini')
+### Base network: VTN, VXM or DMR, TSM
+parser.add_argument('-b', '--base', type= lambda x: {
+                        'vtn': 'vtn', 'vxm': 'vxm', 'dmr': 'dmr', 'tsm': 'tsm',
+                        'v': 'vtn', 'x': 'vxm', 'd': 'dmr', 't': 'tsm',
+                    }[x.lower()]
+                    , default='vtn', help='vtn or vxm or dmr')
 
 #%%
 args = parser.parse_args()
@@ -56,6 +62,16 @@ elif args.type == 'mini':
     command['-e'] = '1'
     command['-r'] = '3000'
     command['-v'] = '-1'
+
+if args.base == 'vtn':
+    command['-base'] = 'VTN'
+elif args.base == 'vxm':
+    command['-base'] = 'VXM'
+elif args.base == 'dmr':
+    command['-base'] = 'DMR'
+    command['-ua'] = '0'
+elif args.base == 'tsm':
+    command['-base'] = 'TSM'
 
 command = base_command + ' ' + ' '.join([f'{k} {v}' for k, v in command.items()])
 new_args = input('Please input extra args and press Enter to run the following command: \n' + command)
