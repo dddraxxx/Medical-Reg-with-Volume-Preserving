@@ -7,8 +7,8 @@ evaluations/*
 *.jpg
 .ipynb_checkpoints
 eval_excel/
-datasets
-!datasets/liver_cust.json
+datasets/*
 !datasets/brain_cust.json
+
 tools/extensions/
 wandb/
