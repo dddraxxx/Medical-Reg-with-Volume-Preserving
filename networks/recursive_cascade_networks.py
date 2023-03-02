@@ -94,7 +94,7 @@ class RecursiveCascadeNetwork(nn.Module):
             stage1_model (RecursiveCascadeNetwork | nn.Module): The stage 1 model
         """
         print('Building stage 1 model from', state_path)
-        stage1_model = RecursiveCascadeNetwork(n_cascades=self.n_casescades, im_size = self.im_size, base_network=base_network, compute_mask=False, in_channels=2)
+        stage1_model = RecursiveCascadeNetwork(n_cascades=self.n_casescades, im_size = self.im_size, base_network=base_network, in_channels=2)
         load_model_from_dir(state_path, stage1_model)
         return stage1_model
 
