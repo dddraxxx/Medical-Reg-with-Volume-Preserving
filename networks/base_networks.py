@@ -466,20 +466,121 @@ class VTNAffineStem(nn.Module):
         # theta: the affine param
         return flow, {'theta': theta}
 
-# class DMR(nn.Module):
-#     '''
-#     DeFormer Registration network. Credit for https://github.com/cjsorange/dmr-deformer.
-#     '''
-#     def __init__(self, im_size=(128,128,128), flow_multiplier=1., layers=3, in_channels=2):
-#         super(DMR, self).__init__()
-#         vol_size = im_size
-#         self.model = dmr(len(vol_size), vol_size, layer=layers)
-#         self.flow_multiplier = flow_multiplier
+class TSMAffineStem(nn.Module):
+    """
+    TSM affine stem. This is the first part of the TSM network. A multi-layer convolutional network that calculates the affine transformation parameters.
     
-#     def forward(self, fixed, moving, return_neg=False):
-#         flow = self.model(fixed, moving)
-#         flow = self.flow_multiplier*flow
-#         return flow * self.flow_multiplier
+    Args:
+        dim (int): Dimension of the input image.
+        channels (int): Number of channels in the first convolution.
+        flow_multiplier (float): Multiplier for the flow output.
+        im_size (int): Size of the input image.
+        in_channels (int): Number of channels in the input image.
+    """
+    def __init__(self, dim=1, channels=16, flow_multiplier=1., im_size=512, in_channels=2):
+        super(VTNAffineStem, self).__init__()
+        self.flow_multiplier = flow_multiplier
+        self.channels = channels
+        self.dim = dim
+
+        # Network architecture
+        # The first convolution's input is the concatenated image
+        self.conv1 = convolveLeakyReLU(in_channels, channels, 3, 2, dim=self.dim)
+        self.conv2 = convolveLeakyReLU(channels, 2 * channels, 3, 2, dim=dim)
+        self.conv3 = convolveLeakyReLU(2 * channels, 4 * channels, 3, 2, dim=dim)
+        self.conv3_1 = convolveLeakyReLU(4 * channels, 4 * channels, 3, 1, dim=dim)
+        self.conv4 = convolveLeakyReLU(4 * channels, 8 * channels, 3, 2, dim=dim)
+        self.conv4_1 = convolveLeakyReLU(8 * channels, 8 * channels, 3, 1, dim=dim)
+        self.conv5 = convolveLeakyReLU(8 * channels, 16 * channels, 3, 2, dim=dim)
+        self.conv5_1 = convolveLeakyReLU(16 * channels, 16 * channels, 3, 1, dim=dim)
+        self.conv6 = convolveLeakyReLU(16 * channels, 32 * channels, 3, 2, dim=dim)
+        self.conv6_1 = convolveLeakyReLU(32 * channels, 32 * channels, 3, 1, dim=dim)
+
+        # I'm assuming that the image's shape is like (im_size, im_size, im_size)
+        self.last_conv_size = im_size // (self.channels * 4)
+        self.fc_loc = nn.Sequential(
+            nn.Linear(512 * self.last_conv_size**dim, 2048),
+            nn.ReLU(True),
+            nn.Dropout(0.5),
+            nn.Linear(2048, 1024),
+            nn.ReLU(True),
+            nn.Dropout(0.5),
+            nn.Linear(1024, 256),
+            nn.ReLU(True),
+            nn.Dropout(0.5),
+            nn.Linear(256, 6*(dim - 1))
+        )
+        # Initialize the weights/bias with identity transformation
+        self.fc_loc[-1].weight.data.zero_()
+        """
+        Identity Matrix
+            | 1 0 0 0 |
+        I = | 0 1 0 0 | 
+            | 0 0 1 0 |
+        """
+        if dim == 3:
+            self.fc_loc[-1].bias.data.copy_(torch.tensor([1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0], dtype=torch.float))
+        else:
+            self.fc_loc[-1].bias.data.copy_(torch.tensor([1, 0, 0, 0, 1, 0], dtype=torch.float))
+        
+        self.create_flow = self.cr_flow
+        
+    def cr_flow(self, theta, size):
+        shape = size[2:]
+        flow = F.affine_grid(theta-torch.eye(len(shape), len(shape)+1, device=theta.device), size, align_corners=False)
+        if len(shape) == 2:
+            flow = flow[..., [1, 0]]
+            flow = flow.permute(0, 3, 1, 2)
+        elif len(shape) == 3:
+            flow = flow[..., [2, 1, 0]]
+            flow = flow.permute(0, 4, 1, 2, 3)
+        flow = flow*flow.new_tensor(shape).view(-1, *[1 for _ in shape])/2
+        return flow
+    def wr_flow(self, theta, size):
+        flow = F.affine_grid(theta, size, align_corners=False)  # batch x 512 x 512 x 2
+        if self.dim == 2:
+            flow = flow.permute(0, 3, 1, 2)  # batch x 2 x 512 x 512
+        else:
+            flow = flow.permute(0, 4, 1, 2, 3)
+        return flow  
+    def rev_affine(self, theta, dim=2):
+        b = theta[:, :, dim:]
+        inv_w = torch.inverse(theta[:, :dim, :dim])
+        neg_affine = torch.cat([inv_w, -inv_w@b], dim=-1)
+        return neg_affine
+    def neg_flow(self, theta, size):
+        neg_affine = self.rev_affine(theta, dim=self.dim)
+        return self.create_flow(neg_affine, size)
+
+    def forward(self, fixed, moving):
+        """
+        Calculate the affine transformation parameters
+
+        Returns:
+            flow: the flow field
+            theta: dict, with the affine transformation parameters
+        """
+        concat_image = torch.cat((fixed, moving), dim=1)  # 2 x 512 x 512
+        x1 = self.conv1(concat_image)  # 16 x 256 x 256
+        x2 = self.conv2(x1)  # 32 x 128 x 128
+        x3 = self.conv3(x2)  # 1 x 64 x 64 x 64
+        x3_1 = self.conv3_1(x3)  # 64 x 64 x 64
+        x4 = self.conv4(x3_1)  # 128 x 32 x 32
+        x4_1 = self.conv4_1(x4)  # 128 x 32 x 32
+        x5 = self.conv5(x4_1)  # 256 x 16 x 16
+        x5_1 = self.conv5_1(x5)  # 256 x 16 x 16
+        x6 = self.conv6(x5_1)  # 512 x 8 x 8
+        x6_1 = self.conv6_1(x6)  # 512 x 8 x 8
+
+        # Affine transformation
+        xs = x6_1.view(-1, 512 * self.last_conv_size ** self.dim)
+        if self.dim == 3:
+            theta = self.fc_loc(xs).view(-1, 3, 4)
+        else:
+            theta = self.fc_loc(xs).view(-1, 2, 3)
+        flow = self.create_flow(theta, moving.size())
+        # theta: the affine param
+        return flow, {'theta': theta}
     
 class TSM(nn.Module):
     '''
@@ -602,3 +703,19 @@ if __name__ == "__main__":
     # fl_img = st(fl_img, rev_flow)
     plt.imshow(fl_img[0].numpy().transpose(1,2,0))
     plt.show()
+
+
+# class DMR(nn.Module):
+#     '''
+#     DeFormer Registration network. Credit for https://github.com/cjsorange/dmr-deformer.
+#     '''
+#     def __init__(self, im_size=(128,128,128), flow_multiplier=1., layers=3, in_channels=2):
+#         super(DMR, self).__init__()
+#         vol_size = im_size
+#         self.model = dmr(len(vol_size), vol_size, layer=layers)
+#         self.flow_multiplier = flow_multiplier
+    
+#     def forward(self, fixed, moving, return_neg=False):
+#         flow = self.model(fixed, moving)
+#         flow = self.flow_multiplier*flow
+#         return flow * self.flow_multiplier
