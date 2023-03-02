@@ -180,56 +180,6 @@ class PreRegister(nn.Module):
                 img_dict['stage1_mask_on_seg2']= visualize_3d(hard_mask_onimg, inter_dst=1)
             returns = (input_seg, hard_mask)
 
-        if training and cfg.debug:
-            # visualize w_moving, seg2, moving
-            save_dir = 'z_debug'
-            if not os.path.exists(save_dir): os.makedirs(save_dir)
-            combo_imgs(*w_moving[:,0]).save(f'{save_dir}/w_moving.jpg')
-            with torch.no_grad():
-                # check the results of stage1 model on fixed-moving-registration
-                _, _, ss1ag_flows = stage1_model(fixed, moving)
-                wwseg2 = stage1_model.reconstruction(seg2, ss1ag_flows[-1])
-                w1_seg2 = stage1_model.reconstruction(seg2, rs1_flow)
-                w2_moving, _, rs2_agg_flows = stage1_model(template_input[:fixed.shape[0]], w_moving)
-                w2_seg2 = stage1_model.reconstruction(w1_seg2, rs2_agg_flows[-1])
-                flow_ratio2 = extract_tumor_mask(rs2_agg_flows[-1], w2_seg2)
-                w3_moving, _, rs3_agg_flows = stage1_model(template_input[:fixed.shape[0]], w2_moving[-1])
-                w3_seg2 = stage1_model.reconstruction(w2_seg2, rs3_agg_flows[-1])
-                flow_ratio3 = extract_tumor_mask(rs3_agg_flows[-1], w3_seg2)
-                # find the area ranked by dissimilarity
-            def dissimilarity(x, y):
-                x_mean = x-x.mean(dim=(1,2,3,4), keepdim=True)
-                y_mean = y-y.mean(dim=(1,2,3,4), keepdim=True)
-                correlation = x_mean*y_mean
-                return -correlation
-            def dissimilarity_mask(x, y, mask):
-                x_mean = (x*mask).sum(dim=(1,2,3,4), keepdim=True)/mask.sum(dim=(1,2,3,4), keepdim=True)
-                y_mean = (y*mask).sum(dim=(1,2,3,4), keepdim=True)/mask.sum(dim=(1,2,3,4), keepdim=True)
-                x_ = x-x_mean
-                y_ = y-y_mean
-                correlation = x_*y_
-                correlation[~mask] = correlation[mask].median()
-                return -correlation
-            # dissimilarity_moving = dissimilarity_mask(template_input[:fixed.shape[0]], w_moving[-1], w1_seg2>.5)
-            # dissimilarity_moving2 = dissimilarity_mask(template_input[:fixed.shape[0]], w2_moving[-1], w2_seg2>.5)
-            # combo_imgs(*dissimilarity_moving[:,0]).save(f'{save_dir}/dissimilarity_moving.jpg')
-            # combo_imgs(*dissimilarity_moving2[:, 0]).save(f"{save_dir}/dissimilarity_moving2.jpg")
-            # what if we use the second stage flow?
-            combo_imgs(*w2_moving[-1][:,0]).save(f'{save_dir}/w2_moving.jpg')
-            combo_imgs(*flow_ratio2[:,0]).save(f'{save_dir}/flow_ratio2.jpg')
-            # or the third stage flow?
-            combo_imgs(*w3_moving[-1][:,0]).save(f'{save_dir}/w3_moving.jpg')
-            combo_imgs(*flow_ratio3[:,0]).save(f'{save_dir}/flow_ratio3.jpg')
-            combo_imgs(*w_template[-1][[1,2],0]).save(f'{save_dir}/w_template.jpg')
-            combo_imgs(*w_template_seg[:,0]).save(f'{save_dir}/w_template_seg.jpg')
-            combo_imgs(*wwseg2[:,0]).save(f'{save_dir}/wwseg2.jpg')
-            # combo_imgs(*mask_fixing[:,0]).save(f'{save_dir}/mask_fixing.jpg')
-            combo_imgs(*mask_moving[:,0]).save(f'{save_dir}/mask_moving.jpg')
-            combo_imgs(*moving[:,0]).save(f'{save_dir}/moving.jpg')
-            combo_imgs(*seg2[:,0]).save(f'{save_dir}/seg2.jpg')
-            combo_imgs(*flow_ratio[:,0]).save(f'{save_dir}/flow_ratio.jpg')
-            # combo_imgs(*hard_mask[:,0]).save(f'{save_dir}/hard_mask.jpg')
-            # import debugpy; debugpy.listen(5678); print('Waiting for debugger attach'); debugpy.wait_for_client(); debugpy.breakpoint()
         if training:
             # move all to cpu
             log_scalars = {k: v.item() for k, v in log_scalars.items()}

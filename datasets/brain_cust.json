@@ -362,7 +362,7 @@
       "brats/328"
     ],
     "brats-mini":[
-      ["brats/2", "brats/3"]
+      ["brats/10", "brats/4"]
     ],
     "temp" :[
       "brats/44"

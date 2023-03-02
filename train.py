@@ -374,12 +374,12 @@ def main():
                     sim = sim_loss(fixed, warped[-1], 1-warped_soft_mask)
                     # vp_seg_mask now is a continuous mask that represents how shrinky the voxel is
                     vp_seg_mask = warped_mask
-                    if args.debug:
+                    # if args.debug:
                         # import code; code.interact(local=dict(globals(), **locals()))
                         # calculate the strenght of soft contraints compared to hard constraints
-                        (warped_soft_mask>0.5).flatten(1).sum(1)/((w_seg2>1.5).flatten(1).sum(1)+1e-6)
+                        # (warped_soft_mask>0.5).flatten(1).sum(1)/((w_seg2>1.5).flatten(1).sum(1)+1e-6)
                         # calculate the strenght of soft contraints 
-                        (warped_soft_mask)[w_seg2>1.5].sum()/((w_seg2>1.5).sum()+1e-6)
+                        # (warped_soft_mask)[w_seg2>1.5].sum()/((w_seg2>1.5).sum()+1e-6)
                 elif args.masked =='hard':
                     with torch.no_grad():
                         warped_hard_mask = mmodel.reconstruction(compute_mask.float(), agg_flows[-1]) > 0.5
