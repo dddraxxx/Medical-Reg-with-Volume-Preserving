@@ -9,6 +9,7 @@ import numpy as np
 
 # from networks.DMR.model import DMR as dmr
 from networks.TSM.TransMorph import CONFIGS as cfg_tsm, TransMorph as tsm
+from networks.TSM_A.TransMorph_affine import CONFIGS as cfg_tsm_a, SwinAffine as tsm_a
 BASE_NETWORK = ['VTN', 'VXM', 'TSM']
 
 def conv(dim=2):
@@ -478,121 +479,16 @@ class TSMAffineStem(nn.Module):
         in_channels (int): Number of channels in the input image.
     """
     def __init__(self, dim=1, channels=16, flow_multiplier=1., im_size=512, in_channels=2):
-        super(VTNAffineStem, self).__init__()
-        self.flow_multiplier = flow_multiplier
-        self.channels = channels
-        self.dim = dim
-
-        # Network architecture
-        # The first convolution's input is the concatenated image
-        self.conv1 = convolveLeakyReLU(in_channels, channels, 3, 2, dim=self.dim)
-        self.conv2 = convolveLeakyReLU(channels, 2 * channels, 3, 2, dim=dim)
-        self.conv3 = convolveLeakyReLU(2 * channels, 4 * channels, 3, 2, dim=dim)
-        self.conv3_1 = convolveLeakyReLU(4 * channels, 4 * channels, 3, 1, dim=dim)
-        self.conv4 = convolveLeakyReLU(4 * channels, 8 * channels, 3, 2, dim=dim)
-        self.conv4_1 = convolveLeakyReLU(8 * channels, 8 * channels, 3, 1, dim=dim)
-        self.conv5 = convolveLeakyReLU(8 * channels, 16 * channels, 3, 2, dim=dim)
-        self.conv5_1 = convolveLeakyReLU(16 * channels, 16 * channels, 3, 1, dim=dim)
-        self.conv6 = convolveLeakyReLU(16 * channels, 32 * channels, 3, 2, dim=dim)
-        self.conv6_1 = convolveLeakyReLU(32 * channels, 32 * channels, 3, 1, dim=dim)
-
-        # I'm assuming that the image's shape is like (im_size, im_size, im_size)
-        self.last_conv_size = im_size // (self.channels * 4)
-        self.fc_loc = nn.Sequential(
-            nn.Linear(512 * self.last_conv_size**dim, 2048),
-            nn.ReLU(True),
-            nn.Dropout(0.5),
-            nn.Linear(2048, 1024),
-            nn.ReLU(True),
-            nn.Dropout(0.5),
-            nn.Linear(1024, 256),
-            nn.ReLU(True),
-            nn.Dropout(0.5),
-            nn.Linear(256, 6*(dim - 1))
-        )
-        # Initialize the weights/bias with identity transformation
-        self.fc_loc[-1].weight.data.zero_()
-        """
-        Identity Matrix
-            | 1 0 0 0 |
-        I = | 0 1 0 0 | 
-            | 0 0 1 0 |
-        """
-        if dim == 3:
-            self.fc_loc[-1].bias.data.copy_(torch.tensor([1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0], dtype=torch.float))
-        else:
-            self.fc_loc[-1].bias.data.copy_(torch.tensor([1, 0, 0, 0, 1, 0], dtype=torch.float))
-        
-        self.create_flow = self.cr_flow
-        
-    def cr_flow(self, theta, size):
-        shape = size[2:]
-        flow = F.affine_grid(theta-torch.eye(len(shape), len(shape)+1, device=theta.device), size, align_corners=False)
-        if len(shape) == 2:
-            flow = flow[..., [1, 0]]
-            flow = flow.permute(0, 3, 1, 2)
-        elif len(shape) == 3:
-            flow = flow[..., [2, 1, 0]]
-            flow = flow.permute(0, 4, 1, 2, 3)
-        flow = flow*flow.new_tensor(shape).view(-1, *[1 for _ in shape])/2
-        return flow
-    def wr_flow(self, theta, size):
-        flow = F.affine_grid(theta, size, align_corners=False)  # batch x 512 x 512 x 2
-        if self.dim == 2:
-            flow = flow.permute(0, 3, 1, 2)  # batch x 2 x 512 x 512
-        else:
-            flow = flow.permute(0, 4, 1, 2, 3)
-        return flow  
-    def rev_affine(self, theta, dim=2):
-        b = theta[:, :, dim:]
-        inv_w = torch.inverse(theta[:, :dim, :dim])
-        neg_affine = torch.cat([inv_w, -inv_w@b], dim=-1)
-        return neg_affine
-    def neg_flow(self, theta, size):
-        neg_affine = self.rev_affine(theta, dim=self.dim)
-        return self.create_flow(neg_affine, size)
-
-    def forward(self, fixed, moving):
-        """
-        Calculate the affine transformation parameters
-
-        Returns:
-            flow: the flow field
-            theta: dict, with the affine transformation parameters
-        """
-        concat_image = torch.cat((fixed, moving), dim=1)  # 2 x 512 x 512
-        x1 = self.conv1(concat_image)  # 16 x 256 x 256
-        x2 = self.conv2(x1)  # 32 x 128 x 128
-        x3 = self.conv3(x2)  # 1 x 64 x 64 x 64
-        x3_1 = self.conv3_1(x3)  # 64 x 64 x 64
-        x4 = self.conv4(x3_1)  # 128 x 32 x 32
-        x4_1 = self.conv4_1(x4)  # 128 x 32 x 32
-        x5 = self.conv5(x4_1)  # 256 x 16 x 16
-        x5_1 = self.conv5_1(x5)  # 256 x 16 x 16
-        x6 = self.conv6(x5_1)  # 512 x 8 x 8
-        x6_1 = self.conv6_1(x6)  # 512 x 8 x 8
-
-        # Affine transformation
-        xs = x6_1.view(-1, 512 * self.last_conv_size ** self.dim)
-        if self.dim == 3:
-            theta = self.fc_loc(xs).view(-1, 3, 4)
-        else:
-            theta = self.fc_loc(xs).view(-1, 2, 3)
-        flow = self.create_flow(theta, moving.size())
-        # theta: the affine param
-        return flow, {'theta': theta}
-    
-class TSM(nn.Module):
-    '''
-    TransfMorph model. Credit for https://github.com/junyuchen245/TransMorph_Transformer_for_Medical_Image_Registration.git.
-    '''
-    '''
-    config:
+        super(TSMAffineStem, self).__init__()
+        config = cfg_tsm_a['TransMorph-Affine']
+        # AffInfer = .ApplyAffine()
+        '''
+        config = ml_collections.ConfigDict()
         config.if_transskip = True
         config.if_convskip = True
         config.patch_size = 4
         config.in_chans = 2
-        config.embed_dim = 96
+        config.embed_dim = 48
         config.depths = (2, 2, 4, 2)
         config.num_heads = (4, 4, 8, 8)
         config.window_size = (5, 6, 7)
@@ -608,7 +504,50 @@ class TSM(nn.Module):
         config.use_checkpoint = False
         config.out_indices = (0, 1, 2, 3)
         config.reg_head_chan = 16
-        config.img_size = (160, 192, 224)
+        config.img_size = (160, 192, 224)'''
+        config.in_chans = in_channels
+        config.img_size = im_size if isinstance(im_size, (list, tuple)) else ((im_size, im_size, im_size) if dim == 3 else (im_size, im_size))
+        self.model = tsm_a(config)
+        self.flow_multiplier = flow_multiplier
+        vectors = [torch.arange(0, s) for s in config.img_size]
+        grids = torch.meshgrid(vectors, indexing='ij')
+        grid = torch.stack(grids)
+        grid = torch.unsqueeze(grid, 0)
+        grid = grid.type(torch.FloatTensor)
+
+        self.register_buffer('grid', grid, persistent=False)
+        self.cfg = config
+
+    def cr_flow(self, theta, size):
+        shape = size[2:]
+        flow = F.affine_grid(theta-torch.eye(len(shape), len(shape)+1, device=theta.device), size, align_corners=False)
+        if len(shape) == 2:
+            flow = flow[..., [1, 0]]
+            flow = flow.permute(0, 3, 1, 2)
+        elif len(shape) == 3:
+            flow = flow[..., [2, 1, 0]]
+            flow = flow.permute(0, 4, 1, 2, 3)
+        flow = flow*flow.new_tensor(shape).view(-1, *[1 for _ in shape])/2
+        return flow
+
+    def forward(self, fixed, moving):
+        """
+        Calculate the affine transformation parameters
+
+        Returns:
+            flow: the flow field
+            theta: dict, with the affine transformation parameters
+        """
+        concat_image = torch.cat((fixed, moving), dim=1)  # 2 x 512 x 512
+        mat = self.model(concat_image)
+        theta = mat
+        flow = self.cr_flow(theta, moving.size())
+        # theta: the affine param
+        return flow, {'theta': theta}
+    
+class TSM(nn.Module):
+    '''
+    TransfMorph model. Credit for https://github.com/junyuchen245/TransMorph_Transformer_for_Medical_Image_Registration.git.
     '''
     def __init__(self, im_size=(128,128,128), flow_multiplier=1., in_channels=2):
         super(TSM, self).__init__()

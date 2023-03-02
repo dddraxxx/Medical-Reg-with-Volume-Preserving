@@ -29,7 +29,10 @@ class RecursiveCascadeNetwork(nn.Module):
         self.stems = nn.ModuleList()
         # See note in base_networks.py about the assumption in the image shape
         if use_affine:
-            self.stems.append(VTNAffineStem(dim=len(im_size), im_size=im_size[0], in_channels=in_channels))
+            if base_network != 'TSM':
+                self.stems.append(VTNAffineStem(dim=len(im_size), im_size=im_size[0], in_channels=in_channels))
+            else:
+                self.stems.append(TSMAffineStem(dim=len(im_size), im_size=im_size[0], in_channels=in_channels))
         assert base_network in BASE_NETWORK
         base = eval(base_network)
         for i in range(n_cascades):
