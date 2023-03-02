@@ -68,11 +68,14 @@ parser.add_argument('-vp', '--vol_preserve', type=float, default=0, help="use vo
 parser.add_argument('-st', '--size_type', choices=['organ', 'tumor', 'tumor_gt', 'constant', 'dynamic', 'reg'], default='tumor', help = 'organ means VP works on whole organ, tumor means VP works on tumor region, tumor_gt means VP works on tumor region with ground truth, constant means VP ratio is a constant, dynamic means VP has dynamic weight, reg means VP is replaced by reg loss')
 parser.add_argument('--ks_norm', default='voxel', choices=['image', 'voxel'])
 parser.add_argument('-w_ksv', '--w_ks_voxel', default=1, type=float, help='Weight for voxel method in ks loss')
+# network structure
+parser.add_argument('-ua', '--use_affine', type=lambda x: x.lower() in ['true', '1', 't', 'y', 'yes'], default=True, help="whether to use affine transformation")
 
 # mask calculation needs an extra mask as input
 parser.set_defaults(in_channel=3 if parser.parse_args().masked else 2)
 parser.set_defaults(stage1_rev=True if parser.parse_args().base_network == 'VXM' else False)
 parser.set_defaults(n_cascades=1 if parser.parse_args().base_network != 'VTN' else 3)
+parser.set_defaults(use_affine=0 if parser.parse_args().base_network == 'DMR' else 1)
 
 args = parser.parse_args()
 # if args.gpu:
@@ -164,7 +167,7 @@ def main():
         segmentation_class_value=cfg.get('segmentation_class_value', {'unknown':1})
 
     in_channels = args.in_channel
-    model = RecursiveCascadeNetwork(n_cascades=args.n_cascades, im_size=image_size, base_network=args.base_network, in_channels=in_channels, compute_mask=False).cuda()
+    model = RecursiveCascadeNetwork(n_cascades=args.n_cascades, im_size=image_size, base_network=args.base_network, in_channels=in_channels, use_affine=args.use_affine).cuda()
     # compute model size
     total_params = sum(p.nelement()*p.element_size() for p in model.parameters())
     total_buff = sum(b.nelement()*b.element_size() for b in model.buffers())
@@ -283,7 +286,12 @@ def main():
                 moving_ = torch.cat([moving, input_seg], dim=1)
             else:
                 moving_ = moving
-            warped_, flows, agg_flows, affine_params = model(fixed, moving_, return_affine=True)
+
+            returns = model(fixed, moving_, return_affine=args.use_affine)
+            if args.use_affine:
+                warped_, flows, agg_flows, affine_params = returns
+            else:
+                warped_, flows, agg_flows = returns
             warped = [i[:, :-1] for i in warped_] if args.in_channel>2 else warped_
 
             # affine loss
@@ -292,32 +300,40 @@ def main():
                 A = affine_params['theta'][..., :3, :3]
                 ort = ortho_factor * ortho_loss(A)
                 det = det_factor * det_loss(A)
-                with torch.no_grad():
-                    # w_seg2 is always float type
-                    w_seg2 = mmodel.reconstruction(seg2.float(), agg_flows[-1])
-                    # warped_tseg represents the tumor region in the warped image, boolean type
-                    warped_tseg = w_seg2>1.5
-                    # w_oseg represents the organ region in the warped image, float type
-                    w_oseg = mmodel.reconstruction((seg2>0.5).float(), agg_flows[-1])
-                    # add log scalar tumor/ratio
-                    if (seg2>1.5).sum().item() > 0:
-                        t_c = (warped_tseg.sum(dim=(1,2,3,4)).float() / (seg2 > 1.5).sum(dim=(1,2,3,4)).float())
-                        t_c_nn = t_c[t_c.isnan()==False]
-                        log_scalars['tumor_change'] = t_c_nn.mean().item()
-                        o_c = (w_seg2>0.5).sum(dim=(1,2,3,4)).float() / (seg2 > 0.5).sum(dim=(1,2,3,4)).float()
-                        o_c_nn = o_c[t_c.isnan()==False]
-                        log_scalars['organ_change'] = o_c_nn.mean().item()
-                        log_scalars['to_ratio'] = torch.where(t_c_nn/o_c_nn >1, t_c_nn/o_c_nn, o_c_nn/t_c_nn).mean().item()
+                ort, det = reduce_mean(ort), reduce_mean(det)
+                loss_dict['ortho'] = ort.item()
+                loss_dict['det'] = det.item()
+                loss = loss + ort + det
+            with torch.no_grad():
+                # w_seg2 is always float type
+                w_seg2 = mmodel.reconstruction(seg2.float(), agg_flows[-1])
+                # warped_tseg represents the tumor region in the warped image, boolean type
+                warped_tseg = w_seg2>1.5
+                # w_oseg represents the organ region in the warped image, float type
+                w_oseg = mmodel.reconstruction((seg2>0.5).float(), agg_flows[-1])
+                # add log scalar tumor/ratio
+                if (seg2>1.5).sum().item() > 0:
+                    t_c = (warped_tseg.sum(dim=(1,2,3,4)).float() / (seg2 > 1.5).sum(dim=(1,2,3,4)).float())
+                    t_c_nn = t_c[t_c.isnan()==False]
+                    log_scalars['tumor_change'] = t_c_nn.mean().item()
+                    o_c = (w_seg2>0.5).sum(dim=(1,2,3,4)).float() / (seg2 > 0.5).sum(dim=(1,2,3,4)).float()
+                    o_c_nn = o_c[t_c.isnan()==False]
+                    log_scalars['organ_change'] = o_c_nn.mean().item()
+                    log_scalars['to_ratio'] = torch.where(t_c_nn/o_c_nn >1, t_c_nn/o_c_nn, o_c_nn/t_c_nn).mean().item()
 
-                    # add log scalar dice_organ
-                    dice_organ, _ = dice_jaccard(w_seg2>0.5, seg1>0.5)
-                    log_scalars['dice_organ'] = dice_organ.mean().item()
+                # add log scalar dice_organ
+                dice_organ, _ = dice_jaccard(w_seg2>0.5, seg1>0.5)
+                log_scalars['dice_organ'] = dice_organ.mean().item()
 
-            # sim and reg loss
+            # reg loss
+            reg = reg_loss(
+                flows[int(args.use_affine):]
+                ) * args.reg
             # default masks used for VP loss
             mask = warped_tseg | (seg1>1.5)
             mask_moving = seg2
             vp_seg_mask = w_seg2
+            # sim loss
             if not args.masked:
                 sim = sim_loss(fixed, warped[-1])
             else:
@@ -346,7 +362,6 @@ def main():
                     # TODO: may consider mask outside organ regions
                     sim = masked_sim_loss(fixed, warped[-1], warped_hard_mask)
                     vp_seg_mask = warped_mask
-            reg = reg_loss(flows[1:]) * args.reg
 
             if args.dice_loss>0:
                 # using vanilla dice loss
@@ -359,21 +374,21 @@ def main():
                 loss = loss + dice_lo
 
             # VP loss
-            if args.vol_preserve>0 and args.size_type=='reg':
-                vp_tum_loc = vp_seg_mask>0.5
-                def reg_mask(flow, mask):
-                    deno = mask.sum(dim=(1,2,3,4)).float()
-                    dy = flow[:, :, 1:, :, :] - flow[:, :, :-1, :, :]
-                    dx = flow[:, :, :, 1:, :] - flow[:, :, :, :-1, :]
-                    dz = flow[:, :, :, :, 1:] - flow[:, :, :, :, :-1]
-                    dy = dy * mask[:, :, 1:, :, :]
-                    dx = dx * mask[:, :, :, 1:, :]
-                    dz = dz * mask[:, :, :, :, 1:]
-                    d = (dy**2).sum(dim=(1,2,3,4))/deno + (dx**2).sum(dim=(1,2,3,4))/deno + (dz**2).sum(dim=(1,2,3,4))/deno
-                    return d.mean()/2.0 *4.0
+            # if args.vol_preserve>0 and args.size_type=='reg':
+            #     vp_tum_loc = vp_seg_mask>0.5
+            #     def reg_mask(flow, mask):
+            #         deno = mask.sum(dim=(1,2,3,4)).float()
+            #         dy = flow[:, :, 1:, :, :] - flow[:, :, :-1, :, :]
+            #         dx = flow[:, :, :, 1:, :] - flow[:, :, :, :-1, :]
+            #         dz = flow[:, :, :, :, 1:] - flow[:, :, :, :, :-1]
+            #         dy = dy * mask[:, :, 1:, :, :]
+            #         dx = dx * mask[:, :, :, 1:, :]
+            #         dz = dz * mask[:, :, :, :, 1:]
+            #         d = (dy**2).sum(dim=(1,2,3,4))/deno + (dx**2).sum(dim=(1,2,3,4))/deno + (dz**2).sum(dim=(1,2,3,4))/deno
+            #         return d.mean()/2.0 *4.0
+            #     k_sz = reg_mask(agg_flows[-1], vp_tum_loc) * args.vol_preserve
 
-                k_sz = reg_mask(agg_flows[-1], vp_tum_loc) * args.vol_preserve
-            elif args.vol_preserve>0:
+            if args.vol_preserve>0:
                 # to decide the voxels to be preserved
                 if args.size_type=='organ':
                     # keep the volume of the whole organ 
@@ -434,8 +449,9 @@ def main():
                     log_scalars['k_sz_volume'] = k_sz_volume.item()
                 k_sz = k_sz  * args.vol_preserve
                 if torch.isnan(k_sz): k_sz = sim.new_zeros(1) # k_sz is all nan
-            else:   
-                k_sz = sim.new_zeros(1)
+                k_sz = reduce_mean(k_sz)
+                loss_dict['vol_preserve_loss'] = k_sz.item()
+                loss = loss + k_sz
             
             if args.invert_loss:
                 foward_flow, backward_flow = agg_flows[-1][:args.batch_size], agg_flows[-1][args.batch_size:]
@@ -453,21 +469,17 @@ def main():
                 loss_dict.update({'surf_loss':surf.item()})
                 loss = loss + surf
 
-            loss = loss+sim+reg+det+ort+k_sz
+            loss = loss+sim+reg
             if loss.isnan().any():
-                import pdb; pdb.set_trace()
+                import ipdb; ipdb.set_trace()
                 loss = 0
             loss.backward()
             optim.step()
             # ddp reduce of loss
             loss, sim, reg = reduce_mean(loss), reduce_mean(sim), reduce_mean(reg)
-            ort, det = reduce_mean(ort), reduce_mean(det)
             loss_dict.update({
                 'sim_loss': sim.item(),
                 'reg_loss': reg.item(),
-                'ortho_loss': ort.item(),
-                'det_loss': det.item(),
-                'vol_preserve_loss': k_sz.item(),
                 'loss': loss.item()
             })
 
@@ -618,9 +630,7 @@ if __name__ == '__main__':
     except KeyboardInterrupt:
         # rename log_dir
         log_dir = args.log_dir
-        os.rename(log_dir, log_dir+'_interrupted')
     except Exception as e:
         # rename log_dir
         log_dir = args.log_dir
-        os.rename(log_dir, log_dir+'_error')
         raise e
