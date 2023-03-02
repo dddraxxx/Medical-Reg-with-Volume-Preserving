@@ -59,23 +59,6 @@ def load_model_from_dir(checkpoint_dir, model):
     load_model(torch.load(model_path), model)
     return model_path
 
-import frnn
-def get_nearest(ref, points, k, picked_points):
-    """
-    Find the k nearest picked points for each reference point in 'ref' using the set of points in 'points'.
-
-    Parameters:
-        ref (numpy.ndarray): A 3D numpy array of shape (N, L1, D) representing the reference points.
-        points (numpy.ndarray): A 3D numpy array of shape (N, L2, D) representing the set of points to search in.
-        k (int): The number of nearest picked points to find for each reference point.
-        picked_points (numpy.ndarray): A 2D numpy array of shape (N, L2, D) representing the picked points to gather for.
-
-    Returns:
-        nearest_points (numpy.ndarray): A 3D numpy array of shape (N, k, D) representing the k nearest picked points for each reference point.
-    """
-    dists, idxs, nn, grid = frnn.frnn_grid_points(points, ref, K=k, r=20, return_nn=False)
-    nearest_points = frnn.frnn_gather(picked_points, idxs, k)
-    return nearest_points
 
 def visualize_3d(data, width=5, inter_dst=5, save_name=None, print_=False, color_channel: int=None, norm: bool=False, cmap=None):
     """
@@ -308,7 +291,6 @@ def cal_rev_flow_gpu(flow):
     nn_bors = get_nearest(points, xi, 1, values) # B, H*W*D, 1, 3
     return nn_bors.squeeze(2).permute(0, 2, 1).reshape(bs, 3, *shape)
 
-from tools.extensions.gridding import Gridding
 # grid = Gridding(128)
 def quick_cal_rev_flow_gpu(flow):
     """
