@@ -175,6 +175,8 @@ def main():
             # hash run_id into a short string
             id_for_wandb = hashlib.md5(run_id.encode()).hexdigest()[:8]
             tags = run_id.split('_') + [data_type, args.base_network, str(train_scheme)]
+            # rm empty tags
+            tags = [t for t in tags if t]
             wandb.init(name=name, notes=run_id, sync_tensorboard=True, config=cfg, save_code=True, dir=pa(log_dir).parent, 
                        resume='allow' if not args.ctt else 'must', id=id_for_wandb, tags=tags)
         writer = SummaryWriter(log_dir=log_dir)

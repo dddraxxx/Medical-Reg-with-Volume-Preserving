@@ -1,5 +1,5 @@
 '''
-TransMorph model
+TransMorph-affine
 
 Swin-Transformer code retrieved from:
 https://github.com/SwinTransformer/Swin-Transformer-Semantic-Segmentation
@@ -22,7 +22,8 @@ from timm.models.layers import DropPath, trunc_normal_, to_3tuple
 from torch.distributions.normal import Normal
 import torch.nn.functional as nnf
 import numpy as np
-import networks.TSM.configs_TransMorph as configs
+import networks.TSM_A.config_affine as configs
+import sys
 
 class Mlp(nn.Module):
     def __init__(self, in_features, hidden_features=None, out_features=None, act_layer=nn.GELU, drop=0.):
@@ -217,6 +218,7 @@ class SwinTransformerBlock(nn.Module):
         pad_b = (self.window_size[1] - W % self.window_size[1]) % self.window_size[1]
         pad_h = (self.window_size[2] - T % self.window_size[2]) % self.window_size[2]
         x = nnf.pad(x, (0, 0, pad_f, pad_h, pad_t, pad_b, pad_l, pad_r))
+
         _, Hp, Wp, Tp, _ = x.shape
 
         # cyclic shift
@@ -437,12 +439,13 @@ class PatchEmbed(nn.Module):
         """Forward function."""
         # padding
         _, _, H, W, T = x.size()
-        if T % self.patch_size[2] != 0:
+        if W % self.patch_size[2] != 0:
             x = nnf.pad(x, (0, self.patch_size[2] - T % self.patch_size[2]))
-        if W % self.patch_size[1] != 0:
+        if H % self.patch_size[1] != 0:
             x = nnf.pad(x, (0, 0, 0, self.patch_size[1] - W % self.patch_size[1]))
-        if H % self.patch_size[0] != 0:
+        if T % self.patch_size[0] != 0:
             x = nnf.pad(x, (0, 0, 0, 0, 0, self.patch_size[0] - H % self.patch_size[0]))
+
         x = self.proj(x)  # B C Wh Ww Wt
         if self.norm is not None:
             Wh, Ww, Wt = x.size(2), x.size(3), x.size(4)
@@ -690,124 +693,15 @@ class SwinTransformer(nn.Module):
         super(SwinTransformer, self).train(mode)
         self._freeze_stages()
 
-class Conv3dReLU(nn.Sequential):
-    def __init__(
-            self,
-            in_channels,
-            out_channels,
-            kernel_size,
-            padding=0,
-            stride=1,
-            use_batchnorm=True,
-    ):
-        conv = nn.Conv3d(
-            in_channels,
-            out_channels,
-            kernel_size,
-            stride=stride,
-            padding=padding,
-            bias=False,
-        )
-        relu = nn.LeakyReLU(inplace=True)
-        if not use_batchnorm:
-            nm = nn.InstanceNorm3d(out_channels)
-        else:
-            nm = nn.BatchNorm3d(out_channels)
+def weights_init(m):
+    if isinstance(m, nn.Conv3d):
+        nn.init.zeros_(m.weight.data)
+    if isinstance(m, nn.Linear):
+        nn.init.zeros_(m.weight)
 
-        super(Conv3dReLU, self).__init__(conv, nm, relu)
-
-
-class DecoderBlock(nn.Module):
-    def __init__(
-            self,
-            in_channels,
-            out_channels,
-            skip_channels=0,
-            use_batchnorm=True,
-    ):
-        super().__init__()
-        self.conv1 = Conv3dReLU(
-            in_channels + skip_channels,
-            out_channels,
-            kernel_size=3,
-            padding=1,
-            use_batchnorm=use_batchnorm,
-        )
-        self.conv2 = Conv3dReLU(
-            out_channels,
-            out_channels,
-            kernel_size=3,
-            padding=1,
-            use_batchnorm=use_batchnorm,
-        )
-        self.up = nn.Upsample(scale_factor=2, mode='trilinear', align_corners=False)
-
-    def forward(self, x, skip=None):
-        x = self.up(x)
-        if skip is not None:
-            x = torch.cat([x, skip], dim=1)
-        x = self.conv1(x)
-        x = self.conv2(x)
-        return x
-
-class RegistrationHead(nn.Sequential):
-    def __init__(self, in_channels, out_channels, kernel_size=3, upsampling=1):
-        conv3d = nn.Conv3d(in_channels, out_channels, kernel_size=kernel_size, padding=kernel_size // 2)
-        conv3d.weight = nn.Parameter(Normal(0, 1e-5).sample(conv3d.weight.shape))
-        conv3d.bias = nn.Parameter(torch.zeros(conv3d.bias.shape))
-        super().__init__(conv3d)
-
-class SpatialTransformer(nn.Module):
-    """
-    N-D Spatial Transformer
-    Obtained from https://github.com/voxelmorph/voxelmorph
-    """
-
-    def __init__(self, size, mode='bilinear'):
-        super().__init__()
-
-        self.mode = mode
-
-        # create sampling grid
-        vectors = [torch.arange(0, s) for s in size]
-        grids = torch.meshgrid(vectors)
-        grid = torch.stack(grids)
-        grid = torch.unsqueeze(grid, 0)
-        grid = grid.type(torch.FloatTensor)
-
-        # registering the grid as a buffer cleanly moves it to the GPU, but it also
-        # adds it to the state dict. this is annoying since everything in the state dict
-        # is included when saving weights to disk, so the model files are way bigger
-        # than they need to be. so far, there does not appear to be an elegant solution.
-        # see: https://discuss.pytorch.org/t/how-to-register-buffer-without-polluting-state-dict
-        self.register_buffer('grid', grid)
-
-    def forward(self, src, flow):
-        # new locations
-        new_locs = self.grid + flow
-        shape = flow.shape[2:]
-
-        # need to normalize grid values to [-1, 1] for resampler
-        for i in range(len(shape)):
-            new_locs[:, i, ...] = 2 * (new_locs[:, i, ...] / (shape[i] - 1) - 0.5)
-
-        # move channels dim to last position
-        # also not sure why, but the channels need to be reversed
-        if len(shape) == 2:
-            new_locs = new_locs.permute(0, 2, 3, 1)
-            new_locs = new_locs[..., [1, 0]]
-        elif len(shape) == 3:
-            new_locs = new_locs.permute(0, 2, 3, 4, 1)
-            new_locs = new_locs[..., [2, 1, 0]]
-
-        return nnf.grid_sample(src, new_locs, align_corners=True, mode=self.mode)
-
-class TransMorph(nn.Module):
+class SwinAffine(nn.Module):
     def __init__(self, config):
-        '''
-        TransMorph Model
-        '''
-        super(TransMorph, self).__init__()
+        super(SwinAffine, self).__init__()
         if_convskip = config.if_convskip
         self.if_convskip = if_convskip
         if_transskip = config.if_transskip
@@ -831,61 +725,213 @@ class TransMorph(nn.Module):
                                            out_indices=config.out_indices,
                                            pat_merg_rf=config.pat_merg_rf,
                                            )
-        self.up0 = DecoderBlock(embed_dim*8, embed_dim*4, skip_channels=embed_dim*4 if if_transskip else 0, use_batchnorm=False)
-        self.up1 = DecoderBlock(embed_dim*4, embed_dim*2, skip_channels=embed_dim*2 if if_transskip else 0, use_batchnorm=False)  # 384, 20, 20, 64
-        self.up2 = DecoderBlock(embed_dim*2, embed_dim, skip_channels=embed_dim if if_transskip else 0, use_batchnorm=False)  # 384, 40, 40, 64
-        self.up3 = DecoderBlock(embed_dim, embed_dim//2, skip_channels=embed_dim//2 if if_convskip else 0, use_batchnorm=False)  # 384, 80, 80, 128
-        self.up4 = DecoderBlock(embed_dim//2, config.reg_head_chan, skip_channels=config.reg_head_chan if if_convskip else 0, use_batchnorm=False)  # 384, 160, 160, 256
-        self.c1 = Conv3dReLU(config.in_chans, embed_dim//2, 3, 1, use_batchnorm=False)
-        self.c2 = Conv3dReLU(config.in_chans, config.reg_head_chan, 3, 1, use_batchnorm=False)
-        self.reg_head = RegistrationHead(
-            in_channels=config.reg_head_chan,
-            out_channels=3,
-            kernel_size=3,
-        )
-        self.spatial_trans = SpatialTransformer(config.img_size)
-        self.avg_pool = nn.AvgPool3d(3, stride=2, padding=1)
+        self.transformer.apply(weights_init)
+        self.aff_head = nn.Linear(embed_dim*4 * 8*8*8, 100)
+        self.aff_head.weight = nn.Parameter(torch.zeros(self.aff_head.weight.shape))
+        self.aff_head.bias = nn.Parameter(torch.zeros(self.aff_head.bias.shape))
+        self.aff_head_f = nn.Linear(100, 3)
+        self.aff_head_f.weight = nn.Parameter(torch.zeros(self.aff_head_f.weight.shape))
+        self.aff_head_f.bias = nn.Parameter(torch.zeros(self.aff_head_f.bias.shape))#nn.Parameter(torch.tensor([1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0], dtype=torch.float))#nn.Parameter(torch.zeros(self.aff_head_f.bias.shape))
+        self.relu_aff = nn.ReLU(inplace=True)
+        self.scl_head = nn.Linear(embed_dim*4 * 8*8*8, 100)
+        self.scl_head.weight = nn.Parameter(torch.zeros(self.scl_head.weight.shape))
+        self.scl_head.bias = nn.Parameter(torch.zeros(self.scl_head.bias.shape))
+        self.scl_head_f = nn.Linear(100, 3)
+        self.scl_head_f.weight = nn.Parameter(torch.zeros(self.scl_head_f.weight.shape))
+        self.scl_head_f.bias = nn.Parameter(torch.zeros(self.scl_head_f.bias.shape))
+        self.relu_scl = nn.ReLU(inplace=True)
+        self.trans_head = nn.Linear(embed_dim*4 * 8*8*8, 100)
+        self.trans_head.weight = nn.Parameter(torch.zeros(self.trans_head.weight.shape))
+        self.trans_head.bias = nn.Parameter(torch.zeros(self.trans_head.bias.shape))
+        self.trans_head_f = nn.Linear(100, 3)
+        self.trans_head_f.weight = nn.Parameter(torch.zeros(self.trans_head_f.weight.shape))
+        self.trans_head_f.bias = nn.Parameter(torch.zeros(self.trans_head_f.bias.shape))
+        self.relu_trans = nn.ReLU(inplace=True)
+        self.shear_head = nn.Linear(embed_dim*4 * 8*8*8, 100)
+        self.shear_head.weight = nn.Parameter(torch.zeros(self.shear_head.weight.shape))
+        self.shear_head.bias = nn.Parameter(torch.zeros(self.shear_head.bias.shape))
+        self.shear_head_f = nn.Linear(100, 6)
+        self.shear_head_f.weight = nn.Parameter(torch.zeros(self.shear_head_f.weight.shape))
+        self.shear_head_f.bias = nn.Parameter(torch.zeros(self.shear_head_f.bias.shape))
+        self.relu_shear = nn.ReLU(inplace=True)
+        self.affine_trans = AffineTransformer()
 
     def forward(self, x):
         source = x[:, 0:1, :, :]
-        if self.if_convskip:
-            x_s0 = x.clone()
-            x_s1 = self.avg_pool(x)
-            f4 = self.c1(x_s1)
-            f5 = self.c2(x_s0)
-        else:
-            f4 = None
-            f5 = None
+        # import debugpy; debugpy.listen(5678); print('Waiting for debugger attach'); debugpy.wait_for_client(); debugpy.breakpoint()
+        out = self.transformer(x)  # (B, n_patch, hidden)
+        x5 = torch.flatten(out[-1], start_dim=1)
+        aff = self.aff_head(x5)
+        aff = self.relu_aff(aff)
+        aff = self.aff_head_f(aff)
+        scl = self.scl_head(x5)
+        scl = self.relu_scl(scl)
+        scl = self.scl_head_f(scl)
+        trans = self.trans_head(x5)
+        trans = self.relu_trans(trans)
+        trans = self.trans_head_f(trans)
+        shr = self.shear_head(x5)
+        shr = self.relu_shear(shr)
+        shr = self.shear_head_f(shr)
+        aff = torch.clamp(aff, min=-1, max=1) * np.pi
+        #aff = torch.tanh(aff) * np.pi
+        scl = scl + 1
+        scl = torch.clamp(scl, min=0, max=5)
+        shr = torch.clamp(shr, min=-1, max=1) * np.pi#shr = torch.tanh(shr) * np.pi
+        return self.affine_trans(source, aff, scl, trans, shr)
+        #out, mat, inv_mat = self.affine_trans(source, aff)
+        # return out, mat, inv_mat
 
-        out_feats = self.transformer(x)
+class Down(nn.Module):
+    """Downscaling with maxpool then double conv"""
 
-        if self.if_transskip:
-            f1 = out_feats[-2]
-            f2 = out_feats[-3]
-            f3 = out_feats[-4]
-        else:
-            f1 = None
-            f2 = None
-            f3 = None
-        x = self.up0(out_feats[-1], f1)
-        x = self.up1(x, f2)
-        x = self.up2(x, f3)
-        x = self.up3(x, f4)
-        x = self.up4(x, f5)
-        flow = self.reg_head(x)
-        return flow
-        # out = self.spatial_trans(source, flow)
-        # return out, flow
+    def __init__(self, in_channels, out_channels):
+        super().__init__()
+        self.maxpool_conv = nn.Sequential(
+            nn.MaxPool3d(2),
+            DoubleConv(in_channels, out_channels)
+        )
+
+    def forward(self, x):
+        return self.maxpool_conv(x)
+
+class DoubleConv(nn.Module):
+    """(convolution => [BN] => ReLU) * 2"""
+
+    def __init__(self, in_channels, out_channels, mid_channels=None):
+        super().__init__()
+        if not mid_channels:
+            mid_channels = out_channels
+        self.conv1_ = nn.Conv3d(in_channels, mid_channels, kernel_size=3, padding=1)
+        self.relu1_ = nn.ReLU(inplace=True)
+        self.conv2_ = nn.Conv3d(mid_channels, out_channels, kernel_size=3, padding=1)
+        self.relu2_ = nn.ReLU(inplace=True)
+
+    def forward(self, x):
+        x = self.conv1_(x)
+        x = self.relu1_(x)
+        x = self.conv2_(x)
+        x = self.relu2_(x)
+        return x
+
+class AffineNet(nn.Module):
+    def __init__(self, encoder_channels=(4,4,8,8,8), n_channels=2):
+        super(AffineNet, self).__init__()
+        self.n_channels = n_channels
+        self.inc = DoubleConv(n_channels, encoder_channels[0])
+        self.down1 = Down(encoder_channels[0], encoder_channels[1])
+        self.down2 = Down(encoder_channels[1], encoder_channels[2])
+        self.down3 = Down(encoder_channels[2], encoder_channels[3])
+        self.down4 = Down(encoder_channels[3], encoder_channels[4])
+        self.aff_head = nn.Linear(encoder_channels[4]*1000, 3)
+        self.aff_head.weight = nn.Parameter(torch.zeros(self.aff_head.weight.shape))
+        self.aff_head.bias = nn.Parameter(torch.zeros(self.aff_head.bias.shape))
+        self.scl_head = nn.Linear(encoder_channels[4] * 1000, 3)
+        self.scl_head.weight = nn.Parameter(torch.zeros(self.scl_head.weight.shape))
+        self.scl_head.bias = nn.Parameter(torch.zeros(self.scl_head.bias.shape))
+        self.trans_head = nn.Linear(encoder_channels[4] * 1000, 3)
+        self.trans_head.weight = nn.Parameter(torch.zeros(self.trans_head.weight.shape))
+        self.trans_head.bias = nn.Parameter(torch.zeros(self.trans_head.bias.shape))
+        self.shear_head = nn.Linear(encoder_channels[4] * 1000, 6)
+        self.shear_head.weight = nn.Parameter(torch.zeros(self.shear_head.weight.shape))
+        self.shear_head.bias = nn.Parameter(torch.zeros(self.shear_head.bias.shape))
+        self.affine_trans = AffineTransformer()
+
+
+    def forward(self, x):
+        source = x[:, 0:1, :, :]
+        x1 = self.inc(x)
+        x2 = self.down1(x1)
+        x3 = self.down2(x2)
+        x4 = self.down3(x3)
+        x5 = self.down4(x4)
+        x5 = torch.flatten(x5, start_dim=1)
+        aff = self.aff_head(x5)
+        scl = self.scl_head(x5)
+        trans = self.trans_head(x5)
+        shr = self.shear_head(x5)
+
+        out, mat, inv_mat = self.affine_trans(source, aff, scl, trans, shr)
+        return out, mat, inv_mat
+
+class AffineTransformer(nn.Module):
+    """
+    3-D Affine Transformer
+    """
+
+    def __init__(self, mode='bilinear'):
+        super().__init__()
+        self.mode = mode
+
+    def forward(self, src, affine, scale, translate, shear):
+
+        theta_x = affine[:, 0]
+        theta_y = affine[:, 1]
+        theta_z = affine[:, 2]
+        scale_x = scale[:, 0]
+        scale_y = scale[:, 1]
+        scale_z = scale[:, 2]
+        trans_x = translate[:, 0]
+        trans_y = translate[:, 1]
+        trans_z = translate[:, 2]
+        shear_xy = shear[:, 0]
+        shear_xz = shear[:, 1]
+        shear_yx = shear[:, 2]
+        shear_yz = shear[:, 3]
+        shear_zx = shear[:, 4]
+        shear_zy = shear[:, 5]
+
+        rot_mat_x = torch.stack([torch.stack([torch.ones_like(theta_x), torch.zeros_like(theta_x), torch.zeros_like(theta_x)], dim=1), torch.stack([torch.zeros_like(theta_x), torch.cos(theta_x), -torch.sin(theta_x)], dim=1), torch.stack([torch.zeros_like(theta_x), torch.sin(theta_x), torch.cos(theta_x)], dim=1)], dim=2).cuda()
+        rot_mat_y = torch.stack([torch.stack([torch.cos(theta_y), torch.zeros_like(theta_y), torch.sin(theta_y)], dim=1), torch.stack([torch.zeros_like(theta_y), torch.ones_like(theta_x), torch.zeros_like(theta_x)], dim=1), torch.stack([-torch.sin(theta_y), torch.zeros_like(theta_y), torch.cos(theta_y)], dim=1)], dim=2).cuda()
+        rot_mat_z = torch.stack([torch.stack([torch.cos(theta_z), -torch.sin(theta_z), torch.zeros_like(theta_y)], dim=1), torch.stack([torch.sin(theta_z), torch.cos(theta_z), torch.zeros_like(theta_y)], dim=1), torch.stack([torch.zeros_like(theta_y), torch.zeros_like(theta_y), torch.ones_like(theta_x)], dim=1)], dim=2).cuda()
+        scale_mat = torch.stack(
+            [torch.stack([scale_x, torch.zeros_like(theta_z), torch.zeros_like(theta_y)], dim=1),
+             torch.stack([torch.zeros_like(theta_z), scale_y, torch.zeros_like(theta_y)], dim=1),
+             torch.stack([torch.zeros_like(theta_y), torch.zeros_like(theta_y), scale_z], dim=1)], dim=2).cuda()
+        shear_mat = torch.stack(
+            [torch.stack([torch.ones_like(theta_x), torch.tan(shear_xy), torch.tan(shear_xz)], dim=1),
+             torch.stack([torch.tan(shear_yx), torch.ones_like(theta_x), torch.tan(shear_yz)], dim=1),
+             torch.stack([torch.tan(shear_zx), torch.tan(shear_zy), torch.ones_like(theta_x)], dim=1)], dim=2).cuda()
+        trans = torch.stack([trans_x, trans_y, trans_z], dim=1).unsqueeze(dim=2)
+        mat = torch.bmm(shear_mat, torch.bmm(scale_mat, torch.bmm(rot_mat_z, torch.matmul(rot_mat_y, rot_mat_x))))
+        mat = torch.cat([mat, trans], dim=-1)
+        return mat
+        # inv_mat = torch.inverse(mat)
+        # inv_trans = torch.bmm(-inv_mat, trans)
+        # inv_mat = torch.cat([inv_mat, inv_trans], dim=-1)
+        # grid = nnf.affine_grid(mat, [src.shape[0], 3, src.shape[2], src.shape[3], src.shape[4]], align_corners=True)
+        #inv_grid = nnf.affine_grid(inv_mat, [src.shape[0], 3, src.shape[2], src.shape[3], src.shape[4]], align_corners=True)
+        return nnf.grid_sample(src, grid, align_corners=True, mode=self.mode), mat, inv_mat#nnf.grid_sample(src, inv_grid, align_corners=True, mode=self.mode)
+
+class AffineTransform(nn.Module):
+    """
+    3-D Affine Transformer
+    """
+
+    def __init__(self, mode='bilinear'):
+        super().__init__()
+        self.mode = mode
+
+    def forward(self, src, affine):
+
+        mat = affine#torch.bmm(shear_mat, torch.bmm(scale_mat, torch.bmm(rot_mat_z, torch.matmul(rot_mat_y, rot_mat_x))))
+        inv_mat = mat#torch.inverse(mat)
+        grid = nnf.affine_grid(mat, src.size(), align_corners=True)
+        #inv_grid = nnf.affine_grid(inv_mat, [src.shape[0], 3, src.shape[2], src.shape[3], src.shape[4]], align_corners=True)
+        return nnf.grid_sample(src, grid, align_corners=True, mode=self.mode), mat, inv_mat
+
+class ApplyAffine(nn.Module):
+    """
+    3-D Affine Transformer
+    """
+    def __init__(self, mode='bilinear'):
+        super().__init__()
+        self.mode = mode
+
+    def forward(self, src, mat):
+        grid = nnf.affine_grid(mat, [src.shape[0], 3, src.shape[2], src.shape[3], src.shape[4]], align_corners=True)
+        return nnf.grid_sample(src, grid, align_corners=True, mode=self.mode)
 
 CONFIGS = {
-    'TransMorph': configs.get_3DTransMorph_config(),
-    'TransMorph-No-Conv-Skip': configs.get_3DTransMorphNoConvSkip_config(),
-    'TransMorph-No-Trans-Skip': configs.get_3DTransMorphNoTransSkip_config(),
-    'TransMorph-No-Skip': configs.get_3DTransMorphNoSkip_config(),
-    'TransMorph-Lrn': configs.get_3DTransMorphLrn_config(),
-    'TransMorph-Sin': configs.get_3DTransMorphSin_config(),
-    'TransMorph-No-RelPosEmbed': configs.get_3DTransMorphNoRelativePosEmbd_config(),
-    'TransMorph-Large': configs.get_3DTransMorphLarge_config(),
-    'TransMorph-Small': configs.get_3DTransMorphSmall_config(),
-    'TransMorph-Tiny': configs.get_3DTransMorphTiny_config(),
+    'TransMorph-Affine': configs.get_3DTransMorphAffine_config(),
 }
