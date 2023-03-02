@@ -27,7 +27,8 @@ parser.add_argument('-b', '--base', type= lambda x: {
                         'v': 'vtn', 'x': 'vxm', 'd': 'dmr', 't': 'tsm',
                     }[x.lower()]
                     , default='vtn', help='vtn or vxm or dmr')
-
+### add debug flag
+parser.add_argument('-db', '--debug', action='store_true', help='debug mode')
 #%%
 args = parser.parse_args()
 command = {}
@@ -78,6 +79,9 @@ elif args.base == 'dmr':
     command['-ua'] = '0'
 elif args.base == 'tsm':
     command['-base'] = 'TSM'
+
+if args.debug:
+    command['--debug'] = ''
 
 command = base_command + ' ' + ' '.join([f'{k} {v}' for k, v in command.items()])
 new_args = input('Please input extra args and press Enter to run the following command: \n' + command)
