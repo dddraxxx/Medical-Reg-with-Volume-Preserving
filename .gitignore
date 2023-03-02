@@ -8,7 +8,6 @@ evaluations/*
 .ipynb_checkpoints
 eval_excel/
 datasets/*
-!datasets/brain_cust.json
-
+!datasets/*_cust.json
 tools/extensions/
 wandb/
