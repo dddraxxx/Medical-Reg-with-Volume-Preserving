@@ -1,3 +1,4 @@
+from pathlib import Path as pa
 import traceback
 import h5py
 from timeit import default_timer
@@ -31,9 +32,9 @@ parser.add_argument('-e', "--epochs", type=int, default=5)
 parser.add_argument("-r", "--round", type=int, default=20000)
 parser.add_argument("-v", "--val_steps", type=int, default=1000)
 parser.add_argument('-cf', "--checkpoint_frequency", default=0.5, type=float)
-parser.add_argument('-c', "--checkpoint", type=str, default=None)
+parser.add_argument('-c', "--checkpoint", type=lambda x: os.path.realpath(x), default=None)
 parser.add_argument('-ct', '--continue_training', action='store_true')
-parser.add_argument('--ctt', '--continue_training_this', type=str, default=None)
+parser.add_argument('--ctt', '--continue_training_this', type=lambda x: os.path.realpath(x), default=None)
 parser.add_argument('-g', '--gpu', type=str, default='', help='GPU to use')
 parser.add_argument('-d', '--dataset', type=str, default='datasets/liver_cust.json', help='Specifies a data config')
 parser.add_argument("-ts", "--training_scheme", type=lambda x:int(x) if x.isdigit() else x, default='', help='Specifies a training scheme')
@@ -109,11 +110,14 @@ def main():
     print('Val', val_scheme)
     train_dataset = Data(args.dataset, rounds=args.round*args.batch_size, scheme=train_scheme)
     val_dataset = Data(args.dataset, scheme=val_scheme)
+    data_type = 'liver' if 'liver' in args.dataset else 'brain'
+    ckp_freq = int(args.checkpoint_frequency * args.round)
+    args.data_type = data_type
 
     # Hong Kong time
     dt = datetime.datetime.now(tz=datetime.timezone(datetime.timedelta(hours=8)))
     run_id = '_'.join([dt.strftime('%b%d-%H%M%S'), 
-                       str(train_scheme) + ('pc' if args.pre_calc else ''), # what dataset to use and whether to pre-calculate the flow
+                       str(data_type)[:2] + str(train_scheme) + ('pc' if args.pre_calc else ''), # what dataset to use and whether to pre-calculate the flow
                        args.base_network+'x'+str(args.n_cascades), # base network and number of cascades
                        args.name, 
                        args.masked + (f'thr{args.mask_threshold}' + args.soft_transform+'bnd'+str(args.boundary_thickness)+'st{}'.format(1+args.use_2nd_flow) 
@@ -121,13 +125,6 @@ def main():
                        else ''), # params for transforming jacobian
                        'vp'+str(args.vol_preserve)+'st'+args.size_type if args.vol_preserve>0 else '' # params for volume preserving loss
                        ])
-    args.run_id = run_id
-    print('run_id for the exp is', run_id)
-
-    ckp_freq = int(args.checkpoint_frequency * args.round)
-    data_type = 'liver' if 'liver' in args.dataset else 'brain'
-    args.data_type = data_type
-
     # mkdirs for log and Tensorboard
     if not args.debug:
         if not args.ctt:
@@ -142,20 +139,29 @@ def main():
                 os.makedirs(log_dir+'/model_wts/')
                 ckp_dir = log_dir+'/model_wts/'
         else:
-            print("Using log dir")
             log_dir = args.ctt
+            print("Using log dir", log_dir)
+            f = pa(log_dir)
+            while True:
+                if any(['model_wts' in pc.name for pc in f.iterdir()]):
+                    run_id = f.name
+                    break
+                f = f.parent
             ckp_dir = log_dir+'/model_wts/'
             writer = SummaryWriter(log_dir=log_dir)
         # record args
         with open(log_dir+'/args.txt', 'a') as f:
             from pprint import pprint
             pprint(args.__dict__, f)
-            command = "python train.py" + " ".join(["--{} {}".format(k, v) for k, v in args.__dict__.items()])
+            command = "python train.py " + (" ".join(["--{} {}".format(k, v) for k, v in args.__dict__.items() if v])
+                                                   + "--ctt " + log_dir)
             print("\nRunning command:\n" + command, file=f)
             # also save the code to the log dir
             import shutil
             shutil.copyfile(os.path.realpath(__file__), log_dir+'/training_code.py')
         args.log_dir = log_dir
+        args.run_id = run_id
+        print('using run_id:', run_id)
     if args.debug:
         # torch.autograd.set_detect_anomaly(True)
         pass
@@ -215,8 +221,10 @@ def main():
             state = torch.load(ckp)
             start_epoch = state['epoch']
             start_iter = state['global_iter'] + 1
-            optim = state['optimizer_state_dict']
-            scheduler = state['scheduler_state_dict']
+            optim_state = state['optimizer_state_dict']
+            optim.load_state_dict(optim_state)
+            scheduler_state = state['scheduler_state_dict']
+            scheduler.load_state_dict(scheduler_state)
             print("Continue training from checkpoint from epoch {} iter {}".format(start_epoch, start_iter))
     num_worker = min(8, args.batch_size)
     if dist.is_initialized():
@@ -630,7 +638,12 @@ if __name__ == '__main__':
     except KeyboardInterrupt:
         # rename log_dir
         log_dir = args.log_dir
+        print('training interrupted')
+        print(log_dir)
+        # os.rename(log_dir, log_dir+'_interrupted')
     except Exception as e:
         # rename log_dir
         log_dir = args.log_dir
+        print(log_dir)
+        # os.rename(log_dir, log_dir+'_error')
         raise e
