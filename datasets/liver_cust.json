@@ -60,7 +60,7 @@
       "lmk-val": 1.0
     },
     "mini": {
-      "mini-worse": 1.0
+      "mid": 1.0
     },
     "mini-hard":{
       "mini-better": 1.0
@@ -85,6 +85,9 @@
     },
     "sliver":{
       "sliver":1.0
+    },
+    "midi":{
+      "midi":1.0
     }
   },
   "subsets": {
@@ -1123,6 +1126,12 @@
     ],
     "mini-hard":[
       ["lits/115", "lits/33"]
+    ],
+    "mid":[
+      "lits/115",
+      "lits/33",
+      "lits/51",
+      "lits/91"
     ],
     "tumor-train":[
       "lits/91",
