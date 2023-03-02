@@ -65,8 +65,9 @@ if args.type == 'normal':
 elif args.type == 'mini':
     command['-ts'] = 'mini'
     command['-e'] = '1'
-    command['-r'] = '3000'
+    command['-r'] = '1000'
     command['-v'] = '-1'
+    command['-cf'] = '1'
 
 if args.base == 'vtn':
     command['-base'] = 'VTN'

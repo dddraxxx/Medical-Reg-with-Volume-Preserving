@@ -620,12 +620,12 @@ def main():
                 ckp['val_loss'] = val_loss_log
                 ckp['epoch'] = epoch
                 ckp['global_iter'] = iteration
+                torch.save(ckp, f'{ckp_dir}/epoch_{epoch}.pth')
+                optim_state = {}
                 #TODO: add optimizer state dict
-                ckp['optimizer_state_dict'] = optim.state_dict()
-                ckp['scheduler_state_dict'] = scheduler.state_dict()
-
-                torch.save(ckp, f'{ckp_dir}/epoch_{epoch}_iter_{iteration}.pth')
-
+                optim_state['optimizer_state_dict'] = optim.state_dict()
+                optim_state['scheduler_state_dict'] = scheduler.state_dict()
+                torch.save(optim_state, f'{ckp_dir}/optim.pth')
             del fixed, moving, seg2, warped_, flows, agg_flows, loss, sim, reg, 
             del loss_dict, log_scalars, data, img_dict
             t0 = default_timer()   
