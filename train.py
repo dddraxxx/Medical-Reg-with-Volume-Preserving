@@ -1,3 +1,4 @@
+import ml_collections
 import hashlib
 from pathlib import Path as pa
 import traceback
@@ -203,8 +204,9 @@ def main():
             train_dataset.precompute = precompute_h5
             val_dataset.precompute = precompute_h5
         else:
+            cfg_train = ml_collections.ConfigDict(args.__dict__)
             precompute_h5 = False
-            build_precompute(model, train_dataset, args)
+            build_precompute(model, train_dataset, cfg_train)
         
     if dist.is_initialized():
         model = DDP(model, device_ids=[local_rank], output_device=local_rank)
@@ -293,7 +295,7 @@ def main():
                 if precompute_h5:
                     input_seg, compute_mask = data['input_seg'].cuda(), data['compute_mask'].cuda()
                 else:
-                    input_seg, compute_mask, ls, idct = model.pre_register(fixed, moving, seg2, training=True, cfg=args)
+                    input_seg, compute_mask, ls, idct = model.pre_register(fixed, moving, seg2, training=True, cfg=cfg_train)
                     log_scalars.update(ls)
                     img_dict.update(idct)
             if args.masked=='seg': input_seg = seg2.float()
@@ -569,7 +571,7 @@ def main():
                                 if precompute_h5:
                                     input_seg, compute_mask = data['input_seg'].cuda(), data['compute_mask'].cuda()
                                 else:
-                                    input_seg, compute_mask = model.pre_register(fixed, moving, seg2, training=False, cfg=args)
+                                    input_seg, compute_mask = model.pre_register(fixed, moving, seg2, training=False, cfg=cfg_train)
                                 moving_ = torch.cat([moving, input_seg], dim=1)
                             else:
                                 moving_ = moving
