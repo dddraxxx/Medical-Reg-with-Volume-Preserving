@@ -141,12 +141,12 @@ class PreRegister(nn.Module):
             dynamic_mask = rev_flow_ratio2
         else: 
             dynamic_mask = rev_flow_ratio
-        if not cfg.only_shrink:
+        if not cfg.get('only_shrink', True):
             dynamic_mask = torch.where(1>dynamic_mask, 1/(dynamic_mask+1e-8), dynamic_mask)
         thres = cfg.mask_threshold
         if cfg.masked=='soft':
             # TODO: move this to args
-            thres = 1.5
+            assert thres == 1.5
             # temporarily increase tumor area to check if dynamic weights works
             # rev_flow_ratio2 = torch.maximum(((seg2>thres).float() + rev_flow_ratio2)/2, rev_flow_ratio2)
             # set up a functino to transfer flow_ratio to soft_mask for similarity (and possibly VP loss)
@@ -167,7 +167,7 @@ class PreRegister(nn.Module):
                 # img_dict['soft_mask'] = visualize_3d(soft_mask[0,0])
                 img_dict['soft_mask_on_seg2'] = visualize_3d(draw_seg_on_vol(dynamic_mask[0,0],
                                                                             seg2[0,0].round().long(),
-                                                                            to_onehot=True))
+                                                                            to_onehot=True, inter_dst=5), inter_dst=1)
             returns = (input_seg, soft_mask)
         elif cfg.masked=='hard':
             # thres = torch.quantile(w_n, .9)
@@ -175,9 +175,9 @@ class PreRegister(nn.Module):
             hard_mask = dynamic_mask > thres
             input_seg = hard_mask + mask_moving
             if training:
-                hard_mask_onimg = draw_seg_on_vol(moving[0,0], input_seg[0,0].round().long(), to_onehot=True)
-                img_dict['input_seg'] = visualize_3d(input_seg[0,0])
-                img_dict['stage1_mask_on_seg2']= visualize_3d(hard_mask_onimg)
+                hard_mask_onimg = draw_seg_on_vol(moving[0,0], input_seg[0,0].round().long(), to_onehot=True, inter_dst=5)
+                img_dict['input_seg'] = visualize_3d(input_seg[0,0], inter_dst=1)
+                img_dict['stage1_mask_on_seg2']= visualize_3d(hard_mask_onimg, inter_dst=1)
             returns = (input_seg, hard_mask)
 
         if training and cfg.debug:
