@@ -5,11 +5,11 @@ from tools.utils import *
 
 stage1_cfg = {
     'liver': {
-        'VTN': '/home/hynx/regis/recursive-cascaded-networks/logs/liver/VTN/1/Jan08_180325_normal-vtn',
-        'VXM': '/home/hynx/regis/recursive-cascaded-networks/logs/liver/VXM/1/Jan08_175614_normal-vxm',
+        'VTN': './liver/VTN/1/Jan08_180325_normal-vtn',
+        'VXM': './liver/VXM/1/Jan08_175614_normal-vxm',
     },
     'brain': {
-        'VTN': '/home/hynx/regis/recursive-cascaded-networks/logs/brain/VTN/mini/Mar02-151627_brmini_VTNx3_normal__',
+        'VTN': './brain/VTN/1/Mar02-050938_1_VTNx3_normal___',
         'VXM': '',
     },
 }
