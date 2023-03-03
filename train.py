@@ -33,7 +33,7 @@ parser.add_argument('-n', "--n_cascades", type=int, default=3)
 parser.add_argument('-e', "--epochs", type=int, default=5)
 parser.add_argument("-r", "--round", type=int, default=20000)
 parser.add_argument("-v", "--val_steps", type=int, default=1000)
-parser.add_argument('-cf', "--checkpoint_frequency", default=0.5, type=float)
+parser.add_argument('-cf', "--checkpoint_frequency", default=0.2, type=float)
 parser.add_argument('-c', "--checkpoint", type=lambda x: os.path.realpath(x), default=None)
 parser.add_argument('-ct', '--continue_training', action='store_true')
 parser.add_argument('--ctt', '--continue_training_this', type=lambda x: os.path.realpath(x), default=None)
@@ -524,13 +524,13 @@ def main():
             train_reg_loss = train_reg_loss + reg.item()
 
             if local_rank==0 and (iteration%10==0):
+                avg_time_per_iter = (default_timer() - st_t) / (iteration + 1 - start_iter)
+                est_time_for_epo = avg_time_per_iter * (len(train_loader) - iteration)
+                est_time_for_train = (args.epochs - epoch - 1) * len(train_loader) * avg_time_per_iter + est_time_for_epo
+                log_scalars.update({
+                    'est_remain_time': est_time_for_train
+                })
                 if iteration<500 or iteration % 500 == 0:
-                    avg_time_per_iter = (default_timer() - st_t) / (iteration + 1 - start_iter)
-                    est_time_for_epo = avg_time_per_iter * (len(train_loader) - iteration)
-                    est_time_for_train = (args.epochs - epoch - 1) * len(train_loader) * avg_time_per_iter + est_time_for_epo
-                    log_scalars.update({
-                        'est_remain_time': est_time_for_train
-                    })
                     print('*%s* ' % run_id,
                           time.strftime('%Y-%m-%d %H:%M:%S', time.localtime()),
                           'Epoch %d Steps %d, Total time %.2f, data %.2f%%. Loss %.3e lr %.3e' % (epoch, iteration,
