@@ -6,7 +6,7 @@ from tools.utils import *
 stage1_cfg = {
     'liver': {
         'VTN': './logs/liver/VTN/1/Jan08_180325_normal-vtn',
-        'VXM': './logs/liver/VXM/1/Jan08_175614_normal-vxm',
+        'VXM': './logs/liver/VXM/1/Mar01-191032_1_VXMx1_normal__',
         'TSM': './logs/liver/TSM/1/Mar02-033226_1_TSMx1_normal__'
     },
     'brain': {
@@ -28,7 +28,7 @@ def build_precompute(model, dataset, cfg):
     state_path = stage1_cfg[cfg.data_type][cfg.base_network]
     if cfg.stage1_rev:
         print('using rev_flow')
-    model.build_preregister(template_image, template_seg, state_path, cfg.base_network)
+    return model.build_preregister(template_image, template_seg, state_path, cfg.base_network)
 
 def read_cfg(model_path):
     while 'model_wts' in model_path:

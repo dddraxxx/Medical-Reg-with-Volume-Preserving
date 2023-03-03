@@ -68,6 +68,10 @@ class PreRegister(nn.Module):
             sizes = F.interpolate(flow_ratio, size=fixed.shape[-3:], mode='trilinear', align_corners=False) \
                 if flow_ratio.shape[-3:]!=fixed.shape[-3:] else flow_ratio
             flow_ratio = F.avg_pool3d(sizes, kernel_size=n, stride=1, padding=n//2)
+            if not cfg.get('only_shrink', True):
+                flow_ratio = torch.where(flow_ratio>1, 
+                                                flow_ratio, 
+                                                1/flow_ratio)
             if moving_mask is not None:
                 filter_nonorgan(flow_ratio, moving_mask)
             globals().update(locals())
@@ -98,16 +102,17 @@ class PreRegister(nn.Module):
         target_ratio = (w_moving_seg>0.5).sum(dim=(2,3,4), keepdim=True).float() / (mask_moving>0.5).sum(dim=(2,3,4), keepdim=True).float()
 
         ### better to calculate the ratio compared to the target ratio
-        flow_ratio = extract_tumor_mask(rs1_flow, w_moving_seg, n=cfg.masked_neighbor) * target_ratio
-        if cfg.boundary_thickness>0:
-            flow_ratio = remove_boundary_weights(flow_ratio, w_moving_seg)
-        ### temporarily use fix->moving flow to solve this inversion 
-        ### except it is VXM
-        ### will it cause the shrinking of tumor?
-        ## reverse it to input seg, but it is too slow
-        # w_moving_rev_flow = cal_rev_flow_gpu(rs1_flow)
-        w_moving_rev_flow = stage1_model(moving, w_moving)[2][-1] if not cfg.stage1_rev else ss1_flow
-        rev_flow_ratio = stage1_model.reconstruction(flow_ratio, w_moving_rev_flow)
+        if not cfg.use_2nd_flow:
+            flow_ratio = extract_tumor_mask(rs1_flow, w_moving_seg, n=cfg.masked_neighbor) * target_ratio
+            if cfg.boundary_thickness>0:
+                flow_ratio = remove_boundary_weights(flow_ratio, w_moving_seg)
+            ### temporarily use fix->moving flow to solve this inversion 
+            ### except it is VXM
+            ### will it cause the shrinking of tumor?
+            ## reverse it to input seg, but it is too slow
+            # w_moving_rev_flow = cal_rev_flow_gpu(rs1_flow)
+            w_moving_rev_flow = stage1_model(moving, w_moving)[2][-1] if not cfg.stage1_rev else ss1_flow
+            rev_flow_ratio = stage1_model.reconstruction(flow_ratio, w_moving_rev_flow)
         ## below for debugging
         # rw_moving = stage1_model.reconstruction(w_moving, w_moving_rev_flow)
         # s1_flow_moving = stage1_model.reconstruction(w_moving, ss1_flow)
@@ -119,17 +124,18 @@ class PreRegister(nn.Module):
             w_moving2, w_moving_seg2, rs1_flow2 = warp(fixed, w_moving, w_moving_seg, stage1_model)
             target_ratio2 = (w_moving_seg2>0.5).sum(dim=(2,3,4), keepdim=True).float() / (w_moving_seg>0.5).sum(dim=(2,3,4), keepdim=True).float()
             flow_ratio2 = extract_tumor_mask(rs1_flow2, w_moving_seg2, n=cfg.masked_neighbor) * target_ratio2
-            flow_ratio2 = remove_boundary_weights(flow_ratio2, w_moving_seg2)
+            if cfg.boundary_thickness>0:
+                flow_ratio2 = remove_boundary_weights(flow_ratio2, w_moving_seg2)
             # w_moving_rev_flow2 = cal_rev_flow_gpu(rs1_flow2)
             w_moving_rev_flow2 = stage1_model(w_moving, w_moving2)[2][-1]
-            comp_flow2 = stage1_model.composite_flow(w_moving_rev_flow2, w_moving_rev_flow)
+            comp_flow2 = stage1_model.composite_flow(w_moving_rev_flow2, w_moving_rev_flow2)
             rev_flow_ratio2 = stage1_model.reconstruction(flow_ratio2, comp_flow2)
 
         #####
         ### will it be better to use the mask of aggregated mask? thought that would be minor though
+        # TODO: try to combine rev_flow and rev_flow2?
         #####
 
-        # TODO: try to combine rev_flow and rev_flow2?
 
         if training and cfg.debug:
             log_scalars['stage1_target_ratio'] = target_ratio.mean()
@@ -141,12 +147,13 @@ class PreRegister(nn.Module):
             dynamic_mask = rev_flow_ratio2
         else: 
             dynamic_mask = rev_flow_ratio
-        if not cfg.get('only_shrink', True):
-            dynamic_mask = torch.where(1>dynamic_mask, 1/(dynamic_mask+1e-8), dynamic_mask)
+        
+        if cfg.get('use_seg_help', False):
+            # use the segmentation to help the flow
+            dynamic_mask[seg2<2] = 0
+
         thres = cfg.mask_threshold
         if cfg.masked=='soft':
-            # TODO: move this to args
-            assert thres == 1.5
             # temporarily increase tumor area to check if dynamic weights works
             # rev_flow_ratio2 = torch.maximum(((seg2>thres).float() + rev_flow_ratio2)/2, rev_flow_ratio2)
             # set up a functino to transfer flow_ratio to soft_mask for similarity (and possibly VP loss)
@@ -164,7 +171,7 @@ class PreRegister(nn.Module):
             input_seg = soft_mask + mask_moving
             if training:
                 img_dict['input_seg'] = visualize_3d(input_seg[0,0])
-                # img_dict['soft_mask'] = visualize_3d(soft_mask[0,0])
+                img_dict['soft_mask'] = visualize_3d(soft_mask[0,0])
                 img_dict['soft_mask_on_seg2'] = visualize_3d(draw_seg_on_vol(dynamic_mask[0,0],
                                                                             seg2[0,0].round().long(),
                                                                             to_onehot=True, inter_dst=5), inter_dst=1)
@@ -173,6 +180,7 @@ class PreRegister(nn.Module):
             # thres = torch.quantile(w_n, .9)
             thres = cfg.mask_threshold
             hard_mask = dynamic_mask > thres
+            # hard_mask = filter_nonorgan(hard_mask, mask_moving)
             input_seg = hard_mask + mask_moving
             if training:
                 hard_mask_onimg = draw_seg_on_vol(moving[0,0], input_seg[0,0].round().long(), to_onehot=True, inter_dst=5)

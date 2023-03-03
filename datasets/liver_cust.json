@@ -60,7 +60,7 @@
       "lmk-val": 1.0
     },
     "mini": {
-      "mid": 1.0
+      "tumor-train": 1.0
     },
     "mini-hard":{
       "mini-better": 1.0

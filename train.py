@@ -66,6 +66,7 @@ parser.add_argument('-use2', '--use_2nd_flow', default=False, type=lambda x: x.l
 parser.add_argument('-pc', '--pre_calc', default=False, type=lambda x: x.lower() in ['true', '1', 't', 'y', 'yes'], help='Pre-calculate the flow')
 parser.add_argument('-s1r', '--stage1_rev', type=lambda x: x.lower() in ['true', '1', 't', 'y', 'yes'], default=False, help="whether to use reverse flow in stage 1")
 parser.add_argument('-os', '--only_shrink', type=lambda x: x.lower() in ['true', '1', 't', 'y', 'yes'], default=True, help="whether to only use shrinkage in stage 1")
+parser.add_argument('-uh', '--use_seg_help', type=lambda x:x.lower() in ['true', '1', 't', 'y', 'yes'], default=False, help="whether to use segmentation help in stage 1")
 # for VP loss
 parser.add_argument('-vp', '--vol_preserve', type=float, default=0, help="use volume-preserving loss")
 parser.add_argument('-st', '--size_type', choices=['organ', 'tumor', 'tumor_gt', 'constant', 'dynamic', 'reg'], default='tumor', help = 'organ means VP works on whole organ, tumor means VP works on tumor region, tumor_gt means VP works on tumor region with ground truth, constant means VP ratio is a constant, dynamic means VP has dynamic weight, reg means VP is replaced by reg loss')
@@ -138,12 +139,12 @@ def main():
             log_dir = os.path.join('./logs', data_type, args.base_network, str(train_scheme), run_id)
             os.path.exists(log_dir) or os.makedirs(log_dir)
             if not os.path.exists(log_dir+'/model_wts/'):
-                print("Creating ckp dir", log_dir)
+                print("Creating ckp dir", os.path.abspath(log_dir))
                 os.makedirs(log_dir+'/model_wts/')
                 ckp_dir = log_dir+'/model_wts/'
         else:
             log_dir = args.ctt
-            print("Using log dir", log_dir)
+            print("Using log dir", os.path.abspath(log_dir))
             f = pa(log_dir)
             while True:
                 if any(['model_wts' in pc.name for pc in f.iterdir()]):
@@ -246,6 +247,7 @@ def main():
             scheduler.load_state_dict(scheduler_state)
             print("Continue training from checkpoint from epoch {} iter {}".format(start_epoch, start_iter))
     num_worker = min(8, args.batch_size)
+    torch.manual_seed(3749)
     if dist.is_initialized():
         train_sampler = torch.utils.data.distributed.DistributedSampler(train_dataset, shuffle=True)
         train_loader = DataLoader(train_dataset, batch_size=args.batch_size, num_workers=num_worker, sampler=train_sampler)
@@ -263,7 +265,6 @@ def main():
     # use cudnn.benchmark
     torch.backends.cudnn.benchmark = True
     torch.backends.cudnn.enabled = True
-    torch.manual_seed(3749)
     for epoch in range(start_epoch, args.epochs):
         print(f"-----Epoch {epoch+1} / {args.epochs}-----")
         train_epoch_loss = 0
@@ -431,8 +432,8 @@ def main():
                     # the vp_loc is a weighted mask that is calculated from the ratio of the tumor region
                     vp_tum_loc = warped_soft_mask # B, C, S, H, W
                 img_dict['vp_loc'] = visualize_3d(vp_tum_loc[0,0]).cpu()
-                img_dict['vp_loc_on_wseg2'] = visualize_3d(draw_seg_on_vol(vp_tum_loc[0,0][::5], 
-                                                                           w_seg2[0,0].round().long()[::5], 
+                img_dict['vp_loc_on_wseg2'] = visualize_3d(draw_seg_on_vol(vp_tum_loc[0,0], 
+                                                                           w_seg2[0,0].round().long(), 
                                                                            to_onehot=True, inter_dst=5), inter_dst=1).cpu()
                 bs = agg_flows[-1].shape[0]
                 # the following line uses mask_fixing and mask_moving to calculate the ratio

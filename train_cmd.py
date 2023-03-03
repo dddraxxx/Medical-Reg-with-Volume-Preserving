@@ -3,6 +3,8 @@ base_command = 'python train.py'
 
 import argparse
 parser = argparse.ArgumentParser()
+### get name
+parser.add_argument('-n', '--name', type=str, default='', help='name of the experiment')
 ### On Brain or Liver
 parser.add_argument('-d', '--dataset', type= lambda x: {
                         'brain': 'brain', 'liver': 'liver',
@@ -37,7 +39,7 @@ if args.dataset == 'brain':
 elif args.dataset == 'liver':
     command['-d'] = 'datasets/liver_cust.json'
 
-command['--name'] = args.mode
+command['--name'] = args.mode+ (args.name and '-'+args.name)
 if args.mode == 'normal':
     pass
 elif args.mode == 'seg':
