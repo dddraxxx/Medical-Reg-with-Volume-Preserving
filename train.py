@@ -152,6 +152,15 @@ def main():
                     break
                 f = f.parent
             ckp_dir = log_dir+'/model_wts/'
+            ## Directly load the args from the log_dir
+            cfg = read_cfg(log_dir)
+            if cfg.get('log_dir', None) is not None:
+                assert cfg['log_dir'] == log_dir
+            if cfg.get('run_id', None) is not None:
+                assert cfg['run_id'] == run_id
+            for k,v in cfg.items():
+                setattr(args, k, v)
+
         # record args
         with open(log_dir+'/args.txt', 'a') as f:
             from pprint import pprint

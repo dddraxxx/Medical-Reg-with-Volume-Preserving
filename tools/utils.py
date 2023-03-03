@@ -158,11 +158,11 @@ def draw_seg_on_vol(data, lb, if_norm=True, alpha=0.3, colors=["green", "red", "
                         ))
     return torch.stack(res)/255
     
-def show_img(res, save_path=None, norm=True, cmap=None) -> Image:
+def show_img(res, save_path=None, norm=True, cmap=None, inter_dst=5) -> Image:
     import torchvision.transforms as T
     if norm: res = normalize(res)
     if res.ndim>=3:
-        return T.ToPILImage()(visualize_3d(res, cmap=cmap))
+        return T.ToPILImage()(visualize_3d(res, cmap=cmap, inter_dst=inter_dst))
     # normalize res
     res = (res-res.min())/(res.max()-res.min())
 
