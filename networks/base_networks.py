@@ -469,7 +469,8 @@ class VTNAffineStem(nn.Module):
 
 class TSMAffineStem(nn.Module):
     """
-    TSM affine stem. This is the first part of the TSM network. A multi-layer convolutional network that calculates the affine transformation parameters.
+    TSM affine stem. This is the first part of the TSM network. 
+    Credit for https://github.com/junyuchen245/TransMorph_Transformer_for_Medical_Image_Registration.git.
     
     Args:
         dim (int): Dimension of the input image.
