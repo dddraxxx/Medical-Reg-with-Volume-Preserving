@@ -12,7 +12,7 @@ stage1_cfg = {
     'brain': {
         'VTN': './logs/brain/VTN/1/Mar02-050938_1_VTNx3_normal___',
         'VXM': '',
-
+        'TSM': './logs/brain/TSM/1/Mar02-202418_br1_TSMx1_normal__'
     },
 }
 import os
