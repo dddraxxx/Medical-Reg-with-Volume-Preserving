@@ -44,6 +44,7 @@ if args.mode == 'normal':
     pass
 elif args.mode == 'seg':
     command['-m'] = 'seg'
+    command['-st'] = 'tumor'
 elif args.mode == 'adaptive':
     command['-m'] = 'soft'
     command['-trsf'] = 'sigm'
