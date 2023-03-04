@@ -1,7 +1,11 @@
 {
   "files": {
     "brats": {
-      "path": "datasets/brats_t1_23.h5",
+      "path": "datasets/brats_t1_123.h5",
+      "type": "HDF5"
+    },
+    "mrbr":{
+      "path": "datasets/mrbr.h5",
       "type": "HDF5"
     }
   },
@@ -11,28 +15,48 @@
     128
   ],
   "image_type": "brain",
-  "nnUNet_dataset_label":{
+  "nnUNet_dataset_label": {
     "1": "whole",
     "2": "tumor core",
     "3": "enhancing",
-    "2>1>4":"1>2>3"
+    "2>1>4": "1>2>3"
   },
   "segmentation_class_value": {
     "brain": 1,
-    "tumor": 2
+    "tumor": 2,
+    "3": 3,
+    "4": 4,
+    "5": 5,
+    "6": 6,
+    "7": 7,
+    "8": 8,
+    "9": 9,
+    "10": 10
   },
   "schemes": {
     "1": {
       "brats-train": 1.0
     },
     "2": {
-      "brats-val": 1.0
+      "brats-midi": 1.0
     },
     "mini": {
       "brats-mini": 1.0
+    },
+    "mrbr": {
+      "mrbr": 1.0
     }
   },
   "subsets": {
+    "mrbr": [
+      "mrbr/1",
+      "mrbr/2",
+      "mrbr/3",
+      "mrbr/4",
+      "mrbr/5",
+      "mrbr/6",
+      "mrbr/7"
+    ],
     "brats-train": [
       "brats/1",
       "brats/4",
@@ -344,7 +368,7 @@
       "brats/227",
       "brats/231"
     ],
-    "brats-val":[
+    "brats-val": [
       "brats/2",
       "brats/3",
       "brats/15",
@@ -361,10 +385,19 @@
       "brats/323",
       "brats/328"
     ],
-    "brats-mini":[
-      ["brats/10", "brats/4"]
+    "brats-midi": [
+      "brats/15",
+      "brats/20",
+      "brats/33",
+      "brats/47"
     ],
-    "temp" :[
+    "brats-mini": [
+      [
+        "brats/10",
+        "brats/4"
+      ]
+    ],
+    "temp": [
       "brats/44"
     ],
     "brats-val-all": [

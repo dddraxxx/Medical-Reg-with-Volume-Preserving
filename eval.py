@@ -1,3 +1,4 @@
+import time
 from pathlib import Path as pa
 import argparse
 from genericpath import isfile
@@ -36,7 +37,7 @@ parser.add_argument('--lmk_json', type=str, default='/home/hynx/regis/recursive-
 parser.add_argument('-lm_r', '--lmk_radius', type=int, default=10, help='affected landmark within radius')
 parser.add_argument('-vl', '--visual_lmk', action='store_true', help='If visualize landmark')
 parser.add_argument('-rd', '--region_dice', default=True, type=lambda x: x.lower() in ['true', '1', 't', 'y', 'yes'], help='If calculate dice for each region')
-parser.add_argument('-sd', '--surf_dist', default=True, type=lambda x: x.lower() in ['true', '1', 't', 'y', 'yes'], help='If calculate dist for each surface')
+parser.add_argument('-sd', '--surf_dist', default=False, type=lambda x: x.lower() in ['true', '1', 't', 'y', 'yes'], help='If calculate dist for each surface')
 parser.add_argument('-only_vis', '--only_vis_target', action='store_true', help='If only visualize target')
 parser.add_argument('--use_ants', action='store_true', help='if use ants to register')
 parser.add_argument('--debug', action='store_true', help='if debug')
@@ -128,6 +129,7 @@ def main():
             bound_idx = (seg2_surf_tumor.sum(dim=(1,2,3,4))==0)
             if not bound_idx.any(): continue
             else: data=pick_data(bound_idx, data)
+        t0 = time.time()
         seg1, seg2 = data['segmentation1'].float(), data['segmentation2'].float()
                 
         fixed, moving = data['voxel1'], data['voxel2']
@@ -158,7 +160,7 @@ def main():
                     # , return_neg=args.reverse)
                 warped = [i[:,:1,...] for i in warped_]
                 w_seg2 = model.reconstruction(seg2.float().cuda(), agg_flows[-1].float())
-            
+        t_infer =  time.time() 
         if args.save_pkl:
             magg_flows = torch.stack(agg_flows).transpose(0,1).detach().cpu()
             if args.reverse:
@@ -285,10 +287,15 @@ def main():
             continue
         dices = []
 
+        t_begin_eval = time.time()
         for k,v in segmentation_class_value.items():
-            if args.region_dice:
-                sseg1 = data['segmentation1'].cuda() > v-0.5
-                sseg2 = data['segmentation2'].cuda() > v-0.5
+            ### specially for mrbrainS dataset
+            if v > 0 and v not in data['segmentation1'].unique():
+                # print('no {} in segmentation1'.format(k))
+                continue
+            if args.region_dice and v<=2:
+                sseg2 = data['segmentation2'].cuda() > v-0.5 & (data['segmentation2'].cuda() <= 2.5)
+                sseg1 = data['segmentation1'].cuda() > v-0.5 & (data['segmentation1'].cuda() <= 2.5)
                 w_sseg2 =  w_seg2 > (v-0.5)
             else:
                 sseg1 = data['segmentation1'].cuda() == v
@@ -302,21 +309,23 @@ def main():
             results[key].extend(dice.cpu().numpy())
             dices.append(dice.cpu().numpy())
             # add original dice
-            original_dice, _ = dice_jaccard(sseg1, sseg2)
-            key = 'o_dice_{}'.format(k)
-            if key not in results:
-                results[key] = []
-                metric_keys.append(key)
-            results[key].extend(original_dice.cpu().numpy())
+            if False:
+                original_dice, _ = dice_jaccard(sseg1, sseg2)
+                key = 'o_dice_{}'.format(k)
+                if key not in results:
+                    results[key] = []
+                    metric_keys.append(key)
+                results[key].extend(original_dice.cpu().numpy())
             # calculate size ratio
-            original_size = torch.sum(sseg2, dim=(1,2,3,4)).float()
-            current_size = torch.sum(w_sseg2, dim=(1,2,3,4)).float()
-            size_ratio = current_size / original_size
-            key = '{}_ratio'.format(k)
-            if key not in results:
-                results[key] = []
-                metric_keys.append(key)
-            results[key].extend(size_ratio.cpu().numpy())
+            if False:
+                original_size = torch.sum(sseg2, dim=(1,2,3,4)).float()
+                current_size = torch.sum(w_sseg2, dim=(1,2,3,4)).float()
+                size_ratio = current_size / original_size
+                key = '{}_ratio'.format(k)
+                if key not in results:
+                    results[key] = []
+                    metric_keys.append(key)
+                results[key].extend(size_ratio.cpu().numpy())
 
             ### Calculate surface deviation metrics (surface_dice, hd-95)
             if args.surf_dist:
@@ -360,14 +369,18 @@ def main():
         results['tl1_ratio'].extend(tl1_ratio.cpu().numpy())
         results['tl2_ratio'].extend(tl2_ratio.cpu().numpy())
         results['l1l2_ratio'].extend((seg1>.5).sum(dim=(1,2,3,4)).float() / (seg2>.5).sum(dim=(1,2,3,4)).float().cpu().numpy())
+        t_end_eval = time.time()
+
+        # print('infer time: {:.2f}s, eval time: {:.2f}s'.format(t_begin_eval-t_infer, t_end_eval-t_begin_eval))
         
         key = 'to_ratio'
-        if 'tumor_ratio'  in results and 'liver_ratio' in results:
+        k2 = '{}_ratio'.format(cfg_training.data_type)
+        if 'tumor_ratio'  in results and k2 in results:
             if key not in results:
                 results[key] = []
                 metric_keys.append(key)
             tumor_ratio = np.array(results['tumor_ratio'][-len(seg1):])
-            organ_ratio = np.array(results['liver_ratio'][-len(seg1):])
+            organ_ratio = np.array(results[k2][-len(seg1):])
             to_ratio = tumor_ratio / organ_ratio
             results[key].extend(np.where(to_ratio<1, 1/to_ratio, to_ratio)**2)
                
@@ -389,6 +402,8 @@ def main():
         print("Dice score: {} ({})".format(np.mean(dices), np.std(
             np.mean(dices, axis=-1))), file=fo)
         # Dice score for organ and tumour
+        # sort metric_keys
+        metric_keys = sorted(metric_keys)
         for k in metric_keys:
             # nan exclude
             print("{}: {} ({})".format(k, np.nanmean(results[k]), np.nanstd(results[k])), file=fo)
