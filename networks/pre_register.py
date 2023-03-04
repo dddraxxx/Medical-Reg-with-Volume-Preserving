@@ -5,6 +5,8 @@ from tools.utils import *
 from tools.visualization import plot_to_PIL
 import os
 from metrics.losses import jacobian_det
+from bilateral_layer import BilateralFilter3d as BF3d
+bf3d = BF3d(1., 1., 1., .9, use_gpu=True)
 
 class PreRegister(nn.Module):
     """
@@ -92,10 +94,14 @@ class PreRegister(nn.Module):
             # combo_imgs(w_moving2[0,0], w_moving_seg2[0,0], boundary_region[0,0].float()).save('1.png')
             return fratio
         # find shrinking tumors
+        if cfg.get('use_bilateral', False) and cfg.use_2nd_flow:
+            moving_st1 = bf3d(moving)
+        else: 
+            moving_st1 = moving
         if not cfg.stage1_rev:
-            w_moving, w_moving_seg, rs1_flow = warp(fixed, moving, mask_moving, stage1_model)
+            w_moving, w_moving_seg, rs1_flow = warp(fixed, moving_st1, mask_moving, stage1_model)
         else:
-            w_moving, _, rs1_flow, ss1_flow = stage1_model(fixed, moving, return_neg=cfg.stage1_rev)
+            w_moving, _, rs1_flow, ss1_flow = stage1_model(fixed, moving_st1, return_neg=cfg.stage1_rev)
             rs1_flow, ss1_flow = rs1_flow[-1], ss1_flow[-1]
             w_moving = w_moving[-1]
             w_moving_seg = stage1_model.reconstruction(mask_moving, rs1_flow)

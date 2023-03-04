@@ -63,6 +63,7 @@ parser.add_argument('-mn', '--masked_neighbor', type=int, default=3, help="for m
 parser.add_argument('-trsf', '--soft_transform', default='sigm', type=str, help='Soft transform')
 parser.add_argument('-bnd_thick', '--boundary_thickness', default=0.5, type=float, help='Boundary thickness')
 parser.add_argument('-use2', '--use_2nd_flow', default=False, type=lambda x: x.lower() in ['true', '1', 't', 'y', 'yes'], help='Use 2nd flow')
+parser.add_argument('-useb', '--use_bilateral', default=True, type=lambda x: x.lower() in ['true', '1', 't', 'y', 'yes'], help='Use bilateral filter')
 parser.add_argument('-pc', '--pre_calc', default=False, type=lambda x: x.lower() in ['true', '1', 't', 'y', 'yes'], help='Pre-calculate the flow')
 parser.add_argument('-s1r', '--stage1_rev', type=lambda x: x.lower() in ['true', '1', 't', 'y', 'yes'], default=False, help="whether to use reverse flow in stage 1")
 parser.add_argument('-os', '--only_shrink', type=lambda x: x.lower() in ['true', '1', 't', 'y', 'yes'], default=True, help="whether to only use shrinkage in stage 1")
@@ -125,11 +126,12 @@ def main():
                        str(data_type)[:2] + str(train_scheme) + ('pc' if args.pre_calc else ''), # what dataset to use and whether to pre-calculate the flow
                        args.base_network+'x'+str(args.n_cascades), # base network and number of cascades
                        args.name, 
-                       args.masked + (f'thr{args.mask_threshold}' + args.soft_transform+'bnd'+str(args.boundary_thickness)+'st{}'.format(1+args.use_2nd_flow) 
+                       args.masked + (f'thr{args.mask_threshold}' + args.soft_transform+'bnd'+str(args.boundary_thickness)+'st{}'.format(1+args.use_2nd_flow) + ('bf' if args.use_bilateral and args.use_2nd_flow else '')
                        if args.mask_threshold>0 and args.masked in ['soft', 'hard']  
                        else ''), # params for transforming jacobian
                        'vp'+str(args.vol_preserve)+'st'+args.size_type if args.vol_preserve>0 else '' # params for volume preserving loss
                        ])
+    print('Current Run ID:', run_id)
     # mkdirs for log and Tensorboard
     if not args.debug:
         if not args.ctt:
@@ -362,12 +364,8 @@ def main():
                 dice_organ, _ = dice_jaccard(w_seg2>0.5, seg1>0.5)
                 log_scalars['dice_organ'] = dice_organ.mean().item()
 
-            # reg loss
-            reg = reg_loss(
-                flows[int(args.use_affine):]
-                ) * args.reg
             # default masks used for VP loss
-            mask = warped_tseg | (seg1>1.5)
+            ### what is we dont mask the tumor in the fixed image?
             mask_moving = seg2
             vp_seg_mask = w_seg2
             # sim loss
@@ -375,8 +373,9 @@ def main():
                 sim = sim_loss(fixed, warped[-1])
             else:
                 # setup the vp_seg_mask for VP loss
-                assert mask.requires_grad == False
                 if args.masked == 'seg':
+                    # assert mask.requires_grad == False
+                    mask = warped_tseg #| (seg1>1.5) ? may try this
                     sim = masked_sim_loss(fixed, warped[-1], mask)
                 elif args.masked == 'soft':
                     # soft mask * sim loss per pixel, soft mask should be computed from stage1 model
@@ -399,6 +398,10 @@ def main():
                     # TODO: may consider mask outside organ regions
                     sim = masked_sim_loss(fixed, warped[-1], warped_hard_mask)
                     vp_seg_mask = warped_mask
+            # reg loss
+            reg = reg_loss(
+                flows[int(args.use_affine):]
+                ) * args.reg
 
             if args.dice_loss>0:
                 # using vanilla dice loss
