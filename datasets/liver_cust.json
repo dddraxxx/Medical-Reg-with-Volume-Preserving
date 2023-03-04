@@ -60,7 +60,7 @@
       "lmk-val": 1.0
     },
     "mini": {
-      "mid": 1.0
+      "mini-worse": 1.0
     },
     "mini-hard":{
       "mini-better": 1.0
@@ -1128,10 +1128,9 @@
       ["lits/115", "lits/33"]
     ],
     "mid":[
-      "lits/115",
-      "lits/33",
-      "lits/51",
-      "lits/91"
+      ["yanx/14","lits/51"],
+      ["lits/51", "lits/33"] ,
+        ["lits/115", "lits/33"]
     ],
     "tumor-train":[
       "lits/91",

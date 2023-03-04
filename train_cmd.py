@@ -67,7 +67,7 @@ elif args.mode == 'unsup-tumor':
 if args.type == 'normal':
     pass
 elif args.type == 'mini':
-    command['-ts'] = 'mini'
+    command['-ts'] = 'midi'
     command['-e'] = '1'
     command['-r'] = '2000'
     command['-v'] = '-1'

@@ -59,6 +59,7 @@ def main():
     # update args with checkpoint args but do not overwrite
     model_path = args.checkpoint
     cfg_training = read_cfg(model_path)
+    args.dataset = cfg_training.dataset
     # for k, v in cfg.items():
     #     if not hasattr(args, k):
     #         setattr(args, k, v)
@@ -84,7 +85,7 @@ def main():
     # parent of model path
     import re
     # "([^\/]*_\d{6}_[^\/]*)"gm
-    exp_name = re.search(r"([^\/]*_\d{6}_[^\/]*)", model_path).group(1)
+    exp_name = re.search(r"([^\/]*-\d{6}_[^\/]*)", model_path).group(1)
     output_fname = './evaluations/{}_{}_{}.txt'.format(exp_name, args.val_subset or Split.VALID, '' if not args.lmd else 'lm{}'.format(args.lmk_radius))
     print('will save to', output_fname)
 
