@@ -337,6 +337,49 @@ def store_segs_brats(h5_path, selected=np.s_[:], cropped_data='/mnt/sdb/nnUNet/n
             f[group].create_dataset('volume', data=data, dtype='uint8')
             f[group].create_dataset('segmentation', data=seg, dtype='uint8')
 
+def store_segs_mrbr(h5_path, selected=np.s_[:], cropped_data='/home/hynx/regis/zMrbrains18/training', mod='reg_T1.nii.gz'):
+    """
+    We select T1 modality for training. Every data is resized to (128, 128, 128).
+    """
+    all_data = sorted(pa(cropped_data).glob('**/pre/'+mod))
+    print(all_data)
+    ids = range(1, len(all_data)+1)
+    import os
+    h5_path = os.path.realpath(h5_path)
+    def read_data(path):
+        import nibabel as nib
+        seg_path = pa(path).parent.parent/'segm.nii.gz'
+        seg = nib.load(seg_path).get_fdata()
+        arr_path = path
+        arr = nib.load(arr_path).get_fdata()
+        arr = arr.transpose(2, 1, 0)
+        seg = seg.transpose(2, 1, 0)
+        return arr, seg
+    # create h5 and put data and seg in it
+    with h5py.File(h5_path, 'w') as f:
+        for id in ids[selected]:
+        # for id in ids[selected][:5]:
+            print('id', id)
+            data_path = all_data[id-1]
+            img, seg = read_data(data_path)
+            seg = resize_data(seg, (128, 128, 128), is_seg=True)
+            img = resize_data(img, (128, 128, 128), is_seg=False)
+
+            seg[seg!=0]=seg[seg!=0]+2
+
+            data = img
+            # visulize_3d(data, inter_dst=3, save_name = 'img.jpg')
+            group = f'{id}'
+            # create group
+            f.create_group(group)
+            # normalize volume to 0-255
+            data = (data - np.min(data)) / (np.max(data) - np.min(data)) * 255
+            data = data.astype(np.uint8)
+            seg = seg.astype(np.uint8)
+            # store data and seg as 'volume' and 'segmentation' dataset
+            f[group].create_dataset('volume', data=data, dtype='uint8')
+            f[group].create_dataset('segmentation', data=seg, dtype='uint8')
+
 def get_meta(id, path='/mnt/sdc/lits/train'):
     img, meta = LoadImage()(f'{path}/volume-{id}.nii')
     return meta
@@ -413,8 +456,8 @@ def store_dicom_h5(h5_path, path = '/mnt/sdc/qhd/nbia/Duke-Breast-Cancer-MRI'):
 
 if __name__=='__main__':
     # store_segs('/home/hynx/regis/Recursive-Cascaded-Networks/datasets/lits.h5')#, selected=np.s_[128:129])
-    store_segs_brats('/home/hynx/regis/recursive-cascaded-networks/datasets/brats_t1_123.h5', mod=0, lab=[1,2,3])
-    visual_h5('/home/hynx/regis/recursive-cascaded-networks/datasets/brats_t1_123.h5')
+    store_segs_mrbr('/home/hynx/regis/recursive-cascaded-networks/datasets/mrbr.h5')
+    visual_h5('/home/hynx/regis/recursive-cascaded-networks/datasets/mrbr.h5')
     # visual_h5('/home/hynx/regis/Recursive-Cascaded-Networks/datasets/lits.h5')
     # visual_h5('/home/hynx/regis/Recursive-Cascaded-Networks/datasets/lspig_val.h5')
     # visual_h5('/home/hynx/regis/Recursive-Cascaded-Networks/datasets/lits_paste.h5')
