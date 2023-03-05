@@ -13,8 +13,8 @@ parser.add_argument('-d', '--dataset', type= lambda x: {
                     , default='liver', help='brain or liver')
 ### Use Normal? Seg?  or adaptive? or hard?
 parser.add_argument('-m', '--mode', type=lambda x: {
-                        'normal': 'normal', 'seg': 'seg', 'adaptive': 'adaptive', 'organ': 'unsup-organ', 'tumor':'unsup-tumor',
-                        'n': 'normal', 's': 'seg', 'a': 'adaptive', 'o': 'unsup-organ', 't': 'unsup-tumor',
+                        'normal': 'normal', 'seg': 'seg', 'adaptive': 'adaptive', 'organ': 'unsup-organ', 'tumor':'unsup-tumor', 'random-seg': 'random-seg',
+                        'n': 'normal', 's': 'seg', 'a': 'adaptive', 'o': 'unsup-organ', 't': 'unsup-tumor', 'rs': 'random-seg',
                     }[x.lower()]
                     , default='', help='normal or seg or adaptive')
 ### Normal training or Mini Experiments
@@ -46,6 +46,11 @@ elif args.mode == 'seg':
     command['-m'] = 'seg'
     command['-vp'] = '0.1'
     command['-st'] = 'tumor'
+elif args.mode == 'random-seg':
+    command['-m'] = 'seg'
+    command['-vp'] = '0.1'
+    command['-st'] = 'tumor'
+    command['-msd'] = '0.1'
 elif args.mode == 'adaptive':
     command['-m'] = 'soft'
     command['-trsf'] = 'sigm'
