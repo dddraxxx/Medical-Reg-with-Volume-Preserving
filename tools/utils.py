@@ -192,7 +192,7 @@ def combine_pil_img(*ims, axis=1, padding=5):
             im.paste(im_, (0, sum(heights[:i])+padding*i))
     return im
 
-combo_imgs = lambda *ims, axis=1: combine_pil_img(*[show_img(i) for i in ims], axis=axis)
+combo_imgs = lambda *ims, axis=1, idst=5: combine_pil_img(*[show_img(i, inter_dst=idst) for i in ims], axis=axis)
 
 import matplotlib.pyplot as plt
 def plt_img3d_show(imgs, cmap, intrv=5):
