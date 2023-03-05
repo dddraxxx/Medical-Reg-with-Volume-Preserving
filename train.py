@@ -33,7 +33,7 @@ parser.add_argument('-n', "--n_cascades", type=int, default=3)
 parser.add_argument('-e', "--epochs", type=int, default=5)
 parser.add_argument("-r", "--round", type=int, default=20000)
 parser.add_argument("-v", "--val_steps", type=int, default=1000)
-parser.add_argument('-cf', "--checkpoint_frequency", default=0.2, type=float)
+parser.add_argument('-cf', "--checkpoint_frequency", default=0.1, type=float)
 parser.add_argument('-c', "--checkpoint", type=lambda x: os.path.realpath(x), default=None)
 parser.add_argument('-ct', '--continue_training', action='store_true')
 parser.add_argument('--ctt', '--continue_training_this', type=lambda x: os.path.realpath(x), default=None)
@@ -161,7 +161,8 @@ def main():
             if cfg.get('run_id', None) is not None:
                 assert cfg['run_id'] == run_id
             for k,v in cfg.items():
-                setattr(args, k, v)
+                if 'training' not in k and 'continue' not in k and 'checkpoint' not in k and 'ctt' not in k:
+                    setattr(args, k, v)
 
         # record args
         with open(log_dir+'/args.txt', 'a') as f:
@@ -252,10 +253,9 @@ def main():
             state = torch.load(ckp)
             start_epoch = state['epoch']
             start_iter = state['global_iter'] + 1
-            optim_state = state['optimizer_state_dict']
-            optim.load_state_dict(optim_state)
-            scheduler_state = state['scheduler_state_dict']
-            scheduler.load_state_dict(scheduler_state)
+            optim_state = torch.load(pa(ckp).parent/'optim.pth')
+            optim.load_state_dict(optim_state['optimizer_state_dict'])
+            scheduler.load_state_dict(optim_state['scheduler_state_dict'])
             print("Continue training from checkpoint from epoch {} iter {}".format(start_epoch, start_iter))
     num_worker = min(8, args.batch_size)
     torch.manual_seed(3749)
