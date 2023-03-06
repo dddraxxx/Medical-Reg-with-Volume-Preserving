@@ -58,6 +58,7 @@ parser.add_argument('-dc', '--dice_loss', default=0, type=float, help='Dice loss
 # for stage1 masks
 parser.add_argument('-m', '--masked', choices=['soft', 'seg', 'hard'], default='',
      help="mask the tumor part when calculating similarity loss")
+parser.add_argument('-msd', '--mask_seg_dice', type=float, default=-1, help="choose the accuracy of seg mask when using seg mask")
 parser.add_argument('-mt', '--mask_threshold', type=float, default=1.5, help="volume changing threshold for mask")
 parser.add_argument('-mn', '--masked_neighbor', type=int, default=3, help="for masked neibor calculation")
 parser.add_argument('-trsf', '--soft_transform', default='sigm', type=str, help='Soft transform')
@@ -304,6 +305,17 @@ def main():
             seg1 = data['segmentation1'].cuda()
             seg2 = data['segmentation2'].cuda()
             
+            def rand_mask_(mask):
+                tmask = mask>1.5
+                omask = mask>0.5
+                rand_mask = torch.rand_like(mask.float())
+                # tl_ratio = (mask.sum(dim=(1,2,3,4)).float() / (mask_moving.sum(dim=(1,2,3,4)).float()))
+                tl_ratio = tmask.sum().float() / omask.sum().float()
+                rand_mask[tmask] = (rand_mask[tmask] <= args.mask_seg_dice).float()
+                rand_mask[~tmask] = (rand_mask[~tmask] <= (1-args.mask_seg_dice)/(1/tl_ratio-1)).float()
+                rand_mask[omask] = rand_mask[omask] + 1
+                rand_mask[~omask] = 0
+                return rand_mask
             # computed mask: generate mask for tumor region according to flow
             if args.masked in ['soft', 'hard']:
                 if precompute_h5:
@@ -312,7 +324,17 @@ def main():
                     input_seg, compute_mask, ls, idct = model.pre_register(fixed, moving, seg2, training=True, cfg=cfg_train)
                     log_scalars.update(ls)
                     img_dict.update(idct)
-            if args.masked=='seg': input_seg = seg2.float()
+            # settle down input_seg for the network and VP loss
+            elif args.masked=='seg': 
+                input_mask = seg2.float()
+                if args.mask_seg_dice>0 and args.mask_seg_dice<1:
+                    input_mask = rand_mask_(input_mask)
+                    # calculate dice with rand_mask and seg2 to verify
+                    # dice  = lambda x,y: 2*(x*y).sum(dim=(1,2,3,4)).float() / (x+y).sum(dim=(1,2,3,4)).float()
+                    # print(dice((input_mask>1.5).bool(), (seg2>1.5).bool()))
+                    # import pdb; pdb.set_trace()
+                    img_dict['rand_mask'] = visualize_3d(draw_seg_on_vol(input_mask[0,0], seg2[0,0].long(), to_onehot=True, inter_dst=5), inter_dst=1).cpu()
+                input_seg = input_mask
             
             ## No augment here
             # if args.augment and (not args.debug):
@@ -349,7 +371,7 @@ def main():
                 # warped_tseg represents the tumor region in the warped image, boolean type
                 warped_tseg = w_seg2>1.5
                 # w_oseg represents the organ region in the warped image, float type
-                w_oseg = mmodel.reconstruction((seg2>0.5).float(), agg_flows[-1])
+                w_oseg = w_seg2>0.5
                 # add log scalar tumor/ratio
                 if (seg2>1.5).sum().item() > 0:
                     t_c = (warped_tseg.sum(dim=(1,2,3,4)).float() / (seg2 > 1.5).sum(dim=(1,2,3,4)).float())
@@ -366,22 +388,27 @@ def main():
 
             # default masks used for VP loss
             ### what is we dont mask the tumor in the fixed image?
-            mask_moving = seg2
-            vp_seg_mask = w_seg2
             # sim loss
+            ## Also give two masks:
+            # 1. mask_moving: the mask where the ratio is computed, used for VP loss
+            # 2. vp_seg_mask: the mask where the ratio is kept, used for VP loss
             if not args.masked:
                 sim = sim_loss(fixed, warped[-1])
+                mask_moving = seg2 
+                vp_seg_mask = w_seg2
             else:
+                mask_moving = input_seg
+                with torch.no_grad():
+                    warped_mask = mmodel.reconstruction(input_seg.float(), agg_flows[-1])
+                vp_seg_mask = warped_mask
                 # setup the vp_seg_mask for VP loss
                 if args.masked == 'seg':
-                    # assert mask.requires_grad == False
-                    mask = warped_tseg #| (seg1>1.5) ? may try this
+                    mask = warped_mask>1.5 #| (seg1>1.5) ? may try this
                     sim = masked_sim_loss(fixed, warped[-1], mask)
                 elif args.masked == 'soft':
                     # soft mask * sim loss per pixel, soft mask should be computed from stage1 model
                     with torch.no_grad():
                         warped_soft_mask = mmodel.reconstruction(compute_mask.float(), agg_flows[-1])
-                        warped_mask = mmodel.reconstruction(input_seg.float(), agg_flows[-1])
                     sim = sim_loss(fixed, warped[-1], 1-warped_soft_mask)
                     # vp_seg_mask now is a continuous mask that represents how shrinky the voxel is
                     vp_seg_mask = warped_mask
@@ -394,7 +421,6 @@ def main():
                 elif args.masked =='hard':
                     with torch.no_grad():
                         warped_hard_mask = mmodel.reconstruction(compute_mask.float(), agg_flows[-1]) > 0.5
-                        warped_mask = mmodel.reconstruction(input_seg.float(), agg_flows[-1])
                     # TODO: may consider mask outside organ regions
                     sim = masked_sim_loss(fixed, warped[-1], warped_hard_mask)
                     vp_seg_mask = warped_mask
@@ -581,7 +607,10 @@ def main():
                             fixed = fixed.cuda()
                             moving = moving.cuda()
                             if args.masked=='seg':
-                                moving_ = torch.cat([moving, seg2], dim=1)
+                                mask = seg2
+                                if args.mask_seg_dice>0 and args.mask_seg_dice<1:
+                                    mask = rand_mask_(mask)
+                                moving_ = torch.cat([moving, mask], dim=1)
                             elif args.masked in ['soft', 'hard']:
                                 if precompute_h5:
                                     input_seg, compute_mask = data['input_seg'].cuda(), data['compute_mask'].cuda()
