@@ -12,10 +12,14 @@ parser.add_argument('-d', '--dataset', type= lambda x: {
                     }[x.lower()]
                     , default='liver', help='brain or liver')
 ### Use Normal? Seg?  or adaptive? or hard?
-parser.add_argument('-m', '--mode', type=lambda x: {
-                        'normal': 'normal', 'seg': 'seg', 'adaptive': 'adaptive', 'organ': 'unsup-organ', 'tumor':'unsup-tumor', 'random-seg': 'random-seg',
+def mode_(x):
+    dct = {'normal': 'normal', 'seg': 'seg', 'adaptive': 'adaptive', 'organ': 'unsup-organ', 'tumor':'unsup-tumor', 'random-seg': 'random-seg',
                         'n': 'normal', 's': 'seg', 'a': 'adaptive', 'o': 'unsup-organ', 't': 'unsup-tumor', 'rs': 'random-seg',
-                    }[x.lower()]
+                    }
+    if x.lower() in dct: return dct[x.lower()]
+    # if x.lower().startswith('rs') or x.lower().startswith('random-seg'):
+    #     return 'random-seg'          
+parser.add_argument('-m', '--mode', type=lambda x:mode_(x)
                     , default='', help='normal or seg or adaptive')
 ### Normal training or Mini Experiments
 parser.add_argument('-t', '--type', type= lambda x: {
