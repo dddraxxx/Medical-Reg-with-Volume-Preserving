@@ -152,6 +152,7 @@ def main():
                 warps.append(warped.numpy())
                 w_seg2 = ants.apply_transforms(fixed=im_fixed, moving=ants.from_numpy(seg2.cpu().numpy()[i,0]), transformlist=reg['fwdtransforms'])
                 w_seg2s.append(w_seg2.numpy())
+                # flow = 
             w_seg2 = np.array(w_seg2s)[:,None]
             warped = np.array(warps)[:,None]
             w_seg2 = torch.from_numpy(w_seg2).float().cuda()
@@ -314,7 +315,7 @@ def main():
         elif args.only_vis_target:
             continue
         # visualize figures
-        if True and not args.use_ants:
+        if False and not args.use_ants:
             dir = '/home/hynx/regis/recursive-cascaded-networks/figures/fig1'
             # print(args.checkpoint)
             model_name = args.checkpoint.split('/')[-1].split('_')[3]
@@ -432,6 +433,7 @@ def main():
                 import ipdb; ipdb.set_trace()
         dices = []
 
+
         t_begin_eval = time.time()
         for k,v in segmentation_class_value.items():
             ### specially for mrbrainS dataset
@@ -499,6 +501,20 @@ def main():
         
         results['id1'].extend(id1)
         results['id2'].extend(id2)
+
+        # add J>0 ratio, and std |J|
+        flow = agg_flows[-1]
+        jacs = jacobian_det(flow, return_det=True)
+        if 'std_jac' not in results:
+            results['std_jac'] = []
+            metric_keys.append('std_jac')
+        if 'Jleq0' not in results:
+            results['Jleq0'] = []
+            metric_keys.append('Jleq0')
+        results['std_jac'].extend(jacs.flatten(1).std(1).cpu().numpy())
+        results['Jleq0'].extend((jacs.flatten(1)<=0).sum(1).cpu().numpy()/jacs.flatten(1).shape[1])
+        # import ipdb; ipdb.set_trace()
+
         # add tumor:liver ratio
         tl1_ratio = (seg1>1.5).sum(dim=(1,2,3,4)).float() / (seg1>0.5).sum(dim=(1,2,3,4)).float()
         tl2_ratio = (seg2>1.5).sum(dim=(1,2,3,4)).float() / (seg2>0.5).sum(dim=(1,2,3,4)).float()
@@ -541,7 +557,10 @@ def main():
     with open(output_fname, 'w') as fo:
         # list result keys (each one takes space 8)
         print('{:<30}'.format('id1'), '{:<30}'.format('id2'), '{:<12}'.format('avg_dice'), *['{:<12}'.format(k) for k in metric_keys], file=fo)
+        # import ipdb; ipdb.set_trace()
+        # print([(k, len(results[k])) for k in results.keys()])
         for i in range(len(results['dices'])):
+            # print(k)
             print('{:<30}'.format(results['id1'][i]), '{:<30}'.format(results['id2'][i]), '{:<12.4f}'.format(np.mean(results['dices'][i])), 
                 *['{:<12.4f}'.format(results[k][i]) for k in metric_keys], file=fo)
             # print(results['id1'][i], results['id2'][i], np.mean(results['dices'][i]), *[results[k][i] for k in metric_keys], file=fo)
