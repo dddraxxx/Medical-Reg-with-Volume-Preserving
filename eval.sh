@@ -51,10 +51,19 @@ function eval_test(){
 ##### VTN, Liver
 msk_weight=/home/hynx/regis/recursive-cascaded-networks/logs/brain/VTN/1/Mar03-014518_br1_VTNx3_adaptive_softthr1.5sigmbnd0.5st1_vp0.1stdynamic
 # single_eval $msk_weight $@
-msk_weight=/home/hynx/regis/recursive-cascaded-networks/logs/liver/VTN/1/Mar04-191415_li1_VTNx3_normal__
 # msk_weight=/home/hynx/regis/recursive-cascaded-networks/logs/liver/VTN/1/Mar05-153409_li1_VTNx3_adaptive-u2bf_softthr1.5sigmbnd0.5st2bf_vp0.1stdynamic
-# msk_weight=/home/hynx/regis/recursive-cascaded-networks/logs/liver/VTN/1/Mar06-015754_li1_VTNx3_seg_seg_vp0.1sttumor
+
+# VTN
+msk_weight=/home/hynx/regis/recursive-cascaded-networks/logs/liver/VTN/1/Mar06-015754_li1_VTNx3_seg_seg_vp0.1sttumor
+msk_weight=/home/hynx/regis/recursive-cascaded-networks/logs/liver/VTN/1/Mar04-191415_li1_VTNx3_normal__
+# eval_test $msk_weight $@
+
 # msk_weight=/home/hynx/regis/recursive-cascaded-networks/logs/liver/VTN/1/Mar07-063207_li1_VTNx3_random-seg0.2_seg_vp0.1sttumor
 # msk_weight=/home/hynx/regis/recursive-cascaded-networks/logs/liver/VTN/1/Mar07-041346_li1_VTNx3_random-seg0.01_seg_vp0.1sttumor
+
+# VXM
+msk_weight=/home/hynx/regis/recursive-cascaded-networks/logs/liver/VXM/1/Mar01-191032_1_VXMx1_normal__
+# eval_test $msk_weight $@
+msk_weight=/home/hynx/regis/recursive-cascaded-networks/logs/liver/VXM/1/Mar08-070844_li1_VXMx1_adaptive_softthr1.5sigmbnd0.5st2bf_vp0.1stdynamic
 eval_test $msk_weight $@
 

@@ -43,7 +43,7 @@ parser.add_argument('-vl', '--visual_lmk', action='store_true', help='If visuali
 parser.add_argument('-rd', '--region_dice', default=True, type=lambda x: x.lower() in ['true', '1', 't', 'y', 'yes'], help='If calculate dice for each region')
 parser.add_argument('-sd', '--surf_dist', default=False, type=lambda x: x.lower() in ['true', '1', 't', 'y', 'yes'], help='If calculate dist for each surface')
 parser.add_argument('-only_vis', '--only_vis_target', action='store_true', help='If only visualize target')
-parser.add_argument('--use_ants', action='store_true', help='if use ants to register')
+parser.add_argument('-ua','--use_ants', action='store_true', help='if use ants to register')
 parser.add_argument('--debug', action='store_true', help='if debug')
 args = parser.parse_args()
 if args.checkpoint == 'normal':
@@ -143,13 +143,19 @@ def main():
         if args.use_ants:
             import ants
             warps = []
+            w_seg2s = []
             for i in range(fixed.shape[0]):
                 im_fixed = ants.from_numpy(fixed.cpu().numpy()[i,0])
                 im_moving = ants.from_numpy(moving.cpu().numpy()[i,0])
                 reg = ants.registration(fixed=im_fixed, moving=im_moving, type_of_transform='SyN')
                 warped = ants.apply_transforms(fixed=im_fixed, moving=im_moving, transformlist=reg['fwdtransforms'])
                 warps.append(warped.numpy())
+                w_seg2 = ants.apply_transforms(fixed=im_fixed, moving=ants.from_numpy(seg2.cpu().numpy()[i,0]), transformlist=reg['fwdtransforms'])
+                w_seg2s.append(w_seg2.numpy())
+            w_seg2 = np.array(w_seg2s)[:,None]
             warped = np.array(warps)[:,None]
+            w_seg2 = torch.from_numpy(w_seg2).float().cuda()
+            warped = torch.from_numpy(warped).float().cuda()
         else:
             with torch.no_grad():
                 fixed = fixed.cuda()
@@ -157,7 +163,7 @@ def main():
                 seg2 = seg2.cuda()
                 if cfg_training.masked =='seg':
                     moving_ = torch.cat([moving, seg2.float()], dim=1)
-                elif cfg_training.masked  in ['soft' , 'mask']:
+                elif cfg_training.masked  in ['soft' , 'hard']:
                     input_seg, compute_mask = model.pre_register(fixed, moving, seg2, training=False, cfg=cfg_training)
                     moving_ = torch.cat([moving, input_seg.float().cuda()], dim=1)
                 else:
@@ -170,7 +176,7 @@ def main():
                     fixed[seg2>1.5] = (org_mean[:,None,None,None,None]+noise)[seg2>1.5]
                     show_img(fixed[0,0]).save('3.jpg')
                 warped_, flows, agg_flows, affine_params = model(fixed, moving_, return_affine=True)
-                if 'normal' in args.checkpoint:
+                if 'normal' in args.checkpoint :#and False:
                     # remove noise
                     # fixed = fixed - noise
                     prev_flow = agg_flows[-1]
@@ -178,6 +184,7 @@ def main():
                         warped_, flows, agg_flows, affine_params = model(fixed, warped_[-1], return_affine=True)
                         prev_flow = model.composite_flow(prev_flow, agg_flows[-1])
                     agg_flows[-1] = prev_flow
+                    print('using multiple flow')
                 # do we need rev flow any more?
                 # , return_neg=args.reverse)
                 warped = [i[:,:1,...] for i in warped_]
@@ -307,7 +314,7 @@ def main():
         elif args.only_vis_target:
             continue
         # visualize figures
-        if True:
+        if True and not args.use_ants:
             dir = '/home/hynx/regis/recursive-cascaded-networks/figures/fig1'
             # print(args.checkpoint)
             model_name = args.checkpoint.split('/')[-1].split('_')[3]
@@ -330,9 +337,11 @@ def main():
                 # combo_imgs(seg_f, seg_m, seg_w).save('{}/{}_seg.png'.format(dir, id))
                 # print('save to {}/{}.png'.format(dir, id))
 
-                im_dct = {'f':f[::5,None, ], 'm':m[::5,None, ], ',w':w[::5,None, ],\
-                          'seg_f':seg_f[::5,None, ], 'seg_m':seg_m[::5,None, ], 'seg_w':seg_w[::5,None, ],}
+                im_dct = {'f':f[::5,None, ], 'm':m[::5,None, ], 'w':w[::5,None, ],\
+                          'seg_f':seg_f[::5,None, ]/2, 'seg_m':seg_m[::5,None, ]/2, 'seg_w':seg_w[::5,None, ]/2,}
 
+                seg_thres = 1.2 if not ('normal' in args.checkpoint) else 1.8
+                print('using seg_thres: {}'.format(seg_thres))
                 # draw line of organ, and overlay tumor
                 for im, seg in [(w, seg_w)]:
                     # bnd = find_surf(seg_f>0.5, 3, thres=0.8)
@@ -342,7 +351,7 @@ def main():
 
                     gt_bnd = find_boundaries(seg_f.cpu().numpy()>0.5, mode='outer', connectivity=1)
                     gt_bnd = torch.from_numpy(gt_bnd).float().cpu()
-                    tum = seg_w>1.5
+                    tum = seg_w>seg_thres
                     tum = tum.cpu()
 
                     lb = torch.stack([bnd, gt_bnd])
@@ -355,7 +364,7 @@ def main():
                     show_img(bnd_img, inter_dst=1).save('{}/{}_bnd.png'.format(dir, id))
                     print('save to {}/{}_bnd.png'.format(dir, id))
                     im_dct['bnd_img'] = bnd_img
-                    # import ipdb; ipdb.set_trace()
+                    import ipdb; ipdb.set_trace()
 
                 ### set jacobian
                 if True:
@@ -365,7 +374,7 @@ def main():
 
                     gt_bnd = find_boundaries(seg_w.cpu().numpy()>0.5, mode='outer', connectivity=1)
                     gt_bnd = torch.from_numpy(gt_bnd)
-                    gt_tum_bnd = find_boundaries(seg_w.cpu().numpy()>1.5, mode='outer', connectivity=1)
+                    gt_tum_bnd = find_boundaries(seg_w.cpu().numpy()>seg_thres, mode='outer', connectivity=1)
                     gt_tum_bnd = torch.from_numpy(gt_tum_bnd)
                     
                     seg_on_jac = draw_seg_on_vol(jac, torch.stack([gt_bnd, gt_tum_bnd])
@@ -373,7 +382,8 @@ def main():
                     show_img(seg_on_jac, inter_dst=1).save('{}/{}_jac.png'.format(dir, id))
                     # show_img(jac).save('{}/{}_jac.png'.format(dir, id))
                     print('save to {}/{}_jac.png'.format(dir, id))
-                    # import ipdb; ipdb.set_trace()
+                    im_dct['jac'] = seg_on_jac
+                    import ipdb; ipdb.set_trace()
 
 
 
@@ -407,18 +417,18 @@ def main():
                     print('save to {}/{}_flow.png'.format(dir, id))
                     im_dct['flow_imgs'] = flow_imgs[::5]
 
-                idx = 13
-                selected_idx = 5*(idx-1)
+                selected_idx = 110
                 se_idxs = list(range(0,128,5))
                 if True:
                     se_dir = '{}/{}/selected'.format(dir,id)
                     pa(se_dir).mkdir(parents=True, exist_ok=True)
                     for k, ims in im_dct.items():
                         for im in range(len(ims)):
+                            # print(k, len(ims))
                             idx = se_idxs[im]
-                            print(ims[im].shape)
+                            # print(ims[im].shape)
                             T.ToPILImage()(ims[im]).save('{}/{}_{}.png'.format(se_dir, k, idx))
-                            print('save to {}/{}_{}.png'.format(se_dir, k, idx))
+                        print('save to {}/{}_{}.png'.format(se_dir, k, selected_idx))
                 import ipdb; ipdb.set_trace()
         dices = []
 
@@ -522,7 +532,8 @@ def main():
             for k in range(len(to_ratio)):
                 print('to_ratio for {} to {}: {:.4f}'.format(id1[k], id2[k], to_ratio[k]**2))
                
-        del fixed, moving, warped, flows, agg_flows, affine_params
+        if not args.use_ants:
+            del fixed, moving, warped, flows, agg_flows, affine_params
         # get mean of dice class
         results['dices'].extend(np.mean(dices, axis=0)) 
 
