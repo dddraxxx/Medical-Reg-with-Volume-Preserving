@@ -36,7 +36,7 @@ parser.add_argument('-re','--reverse', action='store_true', help='If save revers
 parser.add_argument('-tl','--test_large', action='store_true', help='If test on data with small tumor')
 parser.add_argument('-tb','--test_boundary', action='store_true', help='If test on data with tumor close to organ boundary')
 parser.add_argument('-lm', '--lmd', action='store_true', help='If test landmark locations')
-parser.add_argument('--lmk_json', type=str, default='/home/hynx/regis/recursive-cascaded-networks/landmark_json/lits17_landmark.json', help='landmark for eval files')
+parser.add_argument('--lmk_json', type=str, default='./landmark_json/lits17_landmark.json', help='landmark for eval files')
 # parser.add_argument('-m', '--masked', action='store_true', help='If model need masks')
 parser.add_argument('-lm_r', '--lmk_radius', type=int, default=10, help='affected landmark within radius')
 parser.add_argument('-vl', '--visual_lmk', action='store_true', help='If visualize landmark')
