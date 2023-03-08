@@ -1,3 +1,6 @@
+import torchvision.transforms as T
+from metrics.losses import *
+from tools.flow_display import flow_to_image
 import time
 from pathlib import Path as pa
 import argparse
@@ -17,6 +20,7 @@ from networks.recursive_cascade_networks import RecursiveCascadeNetwork
 from data_util.dataset import Data, Split
 from tools.utils import *
 from run_utils import build_precompute, read_cfg
+from tools.visualization import *
 
 parser = argparse.ArgumentParser()
 parser.add_argument('-c', '--checkpoint', type=str, default=None,
@@ -59,8 +63,10 @@ args.checkpoint = pa(args.checkpoint).resolve().__str__()
 def main():
     # update args with checkpoint args but do not overwrite
     model_path = args.checkpoint
+    ckp = args.checkpoint
     cfg_training = read_cfg(model_path)
     args.dataset = cfg_training.dataset
+    args.checkpoint = ckp
     # for k, v in cfg.items():
     #     if not hasattr(args, k):
     #         setattr(args, k, v)
@@ -148,18 +154,34 @@ def main():
             with torch.no_grad():
                 fixed = fixed.cuda()
                 moving = moving.cuda()
+                seg2 = seg2.cuda()
                 if cfg_training.masked =='seg':
-                    moving_ = torch.cat([moving, seg2.float().cuda()], dim=1)
+                    moving_ = torch.cat([moving, seg2.float()], dim=1)
                 elif cfg_training.masked  in ['soft' , 'mask']:
                     input_seg, compute_mask = model.pre_register(fixed, moving, seg2, training=False, cfg=cfg_training)
                     moving_ = torch.cat([moving, input_seg.float().cuda()], dim=1)
                 else:
                     moving_ = moving
+                if 'normal' in args.checkpoint and False:
+                    # add random noise
+                    noise = torch.randn_like(fixed)*0.01
+                    print(seg2.shape, fixed.shape)
+                    org_mean = (fixed*(seg2>1.5)).sum(dim=(1,2,3,4))/(seg2>1.5).sum(dim=(1,2,3,4))
+                    fixed[seg2>1.5] = (org_mean[:,None,None,None,None]+noise)[seg2>1.5]
+                    show_img(fixed[0,0]).save('3.jpg')
                 warped_, flows, agg_flows, affine_params = model(fixed, moving_, return_affine=True)
-                    # do we need rev flow any more?
-                    # , return_neg=args.reverse)
+                if 'normal' in args.checkpoint:
+                    # remove noise
+                    # fixed = fixed - noise
+                    prev_flow = agg_flows[-1]
+                    for i in range(2):
+                        warped_, flows, agg_flows, affine_params = model(fixed, warped_[-1], return_affine=True)
+                        prev_flow = model.composite_flow(prev_flow, agg_flows[-1])
+                    agg_flows[-1] = prev_flow
+                # do we need rev flow any more?
+                # , return_neg=args.reverse)
                 warped = [i[:,:1,...] for i in warped_]
-                w_seg2 = model.reconstruction(seg2.float().cuda(), agg_flows[-1].float())
+                w_seg2 = model.reconstruction(seg2.float(), agg_flows[-1].float())
         t_infer =  time.time() 
         if args.save_pkl:
             magg_flows = torch.stack(agg_flows).transpose(0,1).detach().cpu()
@@ -252,7 +274,6 @@ def main():
         # target_pair = ('lits_{}'.format(115), 'lits_{}'.format(128))
         # if any([p in pairs for p in target_pairs]):
         if target_pair in pairs:
-            from tools.utils import visualize_3d, draw_seg_on_vol, show_img
             pair_id = pairs.index(target_pair)
             pairs_img = [fixed[pair_id,0], moving[pair_id,0], warped[-1][pair_id,0]]
             # get largest component
@@ -285,17 +306,131 @@ def main():
             if args.only_vis_target: quit()
         elif args.only_vis_target:
             continue
+        # visualize figures
+        if True:
+            dir = '/home/hynx/regis/recursive-cascaded-networks/figures/fig1'
+            # print(args.checkpoint)
+            model_name = args.checkpoint.split('/')[-1].split('_')[3]
+            dir = os.path.join(dir, model_name)
+            # mkdir
+            pa(dir).mkdir(parents=True, exist_ok=True)
+            # save images
+            jacs = jacobian_det(agg_flows[-1], return_det=True)[:,None]
+            jacs = F.interpolate(jacs, size=fixed.shape[-3:], mode='trilinear', align_corners=True)
+            for i in range(len(fixed)):
+                if 'test_3-0' not in id1[i]: continue
+
+                f, m, w = fixed[i,0], moving[i,0], warped[-1][i,0]
+                seg_f, seg_m, seg_w = seg1[i,0], seg2[i,0], w_seg2[i,0]
+                id = '{}_{}'.format(id1[i], id2[i])
+                # draw_seg tumor
+                draw = lambda x, y: draw_seg_on_vol(x, y>1.5, inter_dst=5, alpha=0.1)
+                combo_imgs(draw(f, seg_f), draw(m, seg_m), draw(w, seg_w), idst=1).save('{}/{}_seg_draw.png'.format(dir, id))
+                # combo_imgs(f, m, w).save('{}/{}.png'.format(dir, id))
+                # combo_imgs(seg_f, seg_m, seg_w).save('{}/{}_seg.png'.format(dir, id))
+                # print('save to {}/{}.png'.format(dir, id))
+
+                im_dct = {'f':f[::5,None, ], 'm':m[::5,None, ], ',w':w[::5,None, ],\
+                          'seg_f':seg_f[::5,None, ], 'seg_m':seg_m[::5,None, ], 'seg_w':seg_w[::5,None, ],}
+
+                # draw line of organ, and overlay tumor
+                for im, seg in [(w, seg_w)]:
+                    # bnd = find_surf(seg_f>0.5, 3, thres=0.8)
+                    bnd = find_boundaries(seg.cpu().numpy()>0.5, mode='outer', connectivity=1)
+                    print(bnd.max())
+                    bnd = torch.from_numpy(bnd).float()
+
+                    gt_bnd = find_boundaries(seg_f.cpu().numpy()>0.5, mode='outer', connectivity=1)
+                    gt_bnd = torch.from_numpy(gt_bnd).float().cpu()
+                    tum = seg_w>1.5
+                    tum = tum.cpu()
+
+                    lb = torch.stack([bnd, gt_bnd])
+                    bnd_img = draw_seg_on_vol(im, lb, inter_dst=5, alpha=1)*255
+                    bnd_img = bnd_img.to(dtype=torch.uint8)
+                    for d in range(len(bnd_img)):
+                        bnd_img[d] = draw_segmentation_masks(bnd_img[d], tum[::5][d], colors='yellow', alpha=0.5)
+
+                    bnd_img = bnd_img/255
+                    show_img(bnd_img, inter_dst=1).save('{}/{}_bnd.png'.format(dir, id))
+                    print('save to {}/{}_bnd.png'.format(dir, id))
+                    im_dct['bnd_img'] = bnd_img
+                    # import ipdb; ipdb.set_trace()
+
+                ### set jacobian
+                if True:
+                    sigm_trsf_f = lambda x: torch.sigmoid((x-1.5)*5)
+                    jac = jacs[i,0].cpu()
+                    jac = sigm_trsf_f(jac)
+
+                    gt_bnd = find_boundaries(seg_w.cpu().numpy()>0.5, mode='outer', connectivity=1)
+                    gt_bnd = torch.from_numpy(gt_bnd)
+                    gt_tum_bnd = find_boundaries(seg_w.cpu().numpy()>1.5, mode='outer', connectivity=1)
+                    gt_tum_bnd = torch.from_numpy(gt_tum_bnd)
+                    
+                    seg_on_jac = draw_seg_on_vol(jac, torch.stack([gt_bnd, gt_tum_bnd])
+                                                 , inter_dst=5, alpha=1)
+                    show_img(seg_on_jac, inter_dst=1).save('{}/{}_jac.png'.format(dir, id))
+                    # show_img(jac).save('{}/{}_jac.png'.format(dir, id))
+                    print('save to {}/{}_jac.png'.format(dir, id))
+                    # import ipdb; ipdb.set_trace()
+
+
+
+                # show deform field
+                if True:          
+                    # (pa(dir)/'{}_w'.format(id)).mkdir(parents=True, exist_ok=True)
+                    # (pa(dir).parent/'h5'/'{}'.format(id)).mkdir(parents=True, exist_ok=True)
+                    p2d = lambda x: T.ToPILImage()(x.cpu())
+                    # if 'test_3-0_test_3-1' not in id: continue
+                    flow_imgs = []
+                    for ii in range(len(f)):
+                        # get current flow
+                        flow = agg_flows[-1][i][:,ii].permute(1,2,0)
+                        # with OnPlt(figsize=(10,10)):
+                        #     ax = plt.gca()
+                        #     plot_grid(ax, flow.cpu().numpy(), factor=1)
+                        #     plt.savefig(pa(dir)/'{}_w/{}_flow.png'.format(id, ii))
+                        # normal flow
+                        flow = flow/flow.max()
+                        flow_img = flow_to_image(flow.cpu().numpy())
+                        flow_img = torch.from_numpy(flow_img).permute(2,0,1)
+                        # flow_img = T.ToPILImage()()
+                        # flow = flow.permute(2,0,1)
+                        # flow = hsv2rgb(flow)
+                        # flow_img = T.ToPILImage()(flow.cpu())
+                        # flow_img.save(pa(dir)/'{}_w/{}_flowrgb3d.png'.format(id, ii))
+                        # print('save to {}/{}_w/{}_flowrgb3d.png'.format(dir, id, ii))
+                        flow_imgs.append(flow_img)
+                    flow_imgs = torch.stack(flow_imgs)/255
+                    show_img(flow_imgs, inter_dst=5).save('{}/{}_flow.png'.format(dir, id))
+                    print('save to {}/{}_flow.png'.format(dir, id))
+                    im_dct['flow_imgs'] = flow_imgs[::5]
+
+                idx = 13
+                selected_idx = 5*(idx-1)
+                se_idxs = list(range(0,128,5))
+                if True:
+                    se_dir = '{}/{}/selected'.format(dir,id)
+                    pa(se_dir).mkdir(parents=True, exist_ok=True)
+                    for k, ims in im_dct.items():
+                        for im in range(len(ims)):
+                            idx = se_idxs[im]
+                            print(ims[im].shape)
+                            T.ToPILImage()(ims[im]).save('{}/{}_{}.png'.format(se_dir, k, idx))
+                            print('save to {}/{}_{}.png'.format(se_dir, k, idx))
+                import ipdb; ipdb.set_trace()
         dices = []
 
         t_begin_eval = time.time()
         for k,v in segmentation_class_value.items():
             ### specially for mrbrainS dataset
-            if v > 0 and v not in data['segmentation1'].unique():
-                # print('no {} in segmentation1'.format(k))
-                continue
+            # if v > 0 and v not in data['segmentation1'].unique():
+            #     # print('no {} in segmentation1'.format(k))
+            #     continue
             if args.region_dice and v<=2:
-                sseg2 = data['segmentation2'].cuda() > v-0.5 & (data['segmentation2'].cuda() <= 2.5)
-                sseg1 = data['segmentation1'].cuda() > v-0.5 & (data['segmentation1'].cuda() <= 2.5)
+                sseg2 = (data['segmentation2'].cuda() > v-0.5) & (data['segmentation2'].cuda() <= 2.5)
+                sseg1 = (data['segmentation1'].cuda() > v-0.5) & (data['segmentation1'].cuda() <= 2.5)
                 w_sseg2 =  w_seg2 > (v-0.5)
             else:
                 sseg1 = data['segmentation1'].cuda() == v
@@ -317,7 +452,7 @@ def main():
                     metric_keys.append(key)
                 results[key].extend(original_dice.cpu().numpy())
             # calculate size ratio
-            if False:
+            if True:
                 original_size = torch.sum(sseg2, dim=(1,2,3,4)).float()
                 current_size = torch.sum(w_sseg2, dim=(1,2,3,4)).float()
                 size_ratio = current_size / original_size
@@ -382,7 +517,10 @@ def main():
             tumor_ratio = np.array(results['tumor_ratio'][-len(seg1):])
             organ_ratio = np.array(results[k2][-len(seg1):])
             to_ratio = tumor_ratio / organ_ratio
-            results[key].extend(np.where(to_ratio<1, 1/to_ratio, to_ratio)**2)
+            strr = np.where(to_ratio<1, 1/to_ratio, to_ratio)**2
+            results[key].extend(strr)
+            for k in range(len(to_ratio)):
+                print('to_ratio for {} to {}: {:.4f}'.format(id1[k], id2[k], to_ratio[k]**2))
                
         del fixed, moving, warped, flows, agg_flows, affine_params
         # get mean of dice class

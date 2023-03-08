@@ -42,6 +42,19 @@ function eval_vl(){
     python eval.py -d datasets/liver_cust.json -g 2 -c $msk_weight $m -sd 0 -v sliver-val -lm -vl --name vl
 }
 
+function eval_test(){
+    msk_weight=$1
+    shift
+    python eval.py -d datasets/liver_cust.json -g 2 -c $msk_weight -sd 0 -v test  $@
+}
+
+##### VTN, Liver
 msk_weight=/home/hynx/regis/recursive-cascaded-networks/logs/brain/VTN/1/Mar03-014518_br1_VTNx3_adaptive_softthr1.5sigmbnd0.5st1_vp0.1stdynamic
-single_eval $msk_weight $@
+# single_eval $msk_weight $@
+msk_weight=/home/hynx/regis/recursive-cascaded-networks/logs/liver/VTN/1/Mar04-191415_li1_VTNx3_normal__
+# msk_weight=/home/hynx/regis/recursive-cascaded-networks/logs/liver/VTN/1/Mar05-153409_li1_VTNx3_adaptive-u2bf_softthr1.5sigmbnd0.5st2bf_vp0.1stdynamic
+# msk_weight=/home/hynx/regis/recursive-cascaded-networks/logs/liver/VTN/1/Mar06-015754_li1_VTNx3_seg_seg_vp0.1sttumor
+# msk_weight=/home/hynx/regis/recursive-cascaded-networks/logs/liver/VTN/1/Mar07-063207_li1_VTNx3_random-seg0.2_seg_vp0.1sttumor
+# msk_weight=/home/hynx/regis/recursive-cascaded-networks/logs/liver/VTN/1/Mar07-041346_li1_VTNx3_random-seg0.01_seg_vp0.1sttumor
+eval_test $msk_weight $@
 
