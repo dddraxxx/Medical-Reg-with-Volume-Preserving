@@ -22,56 +22,13 @@ from torch.utils.tensorboard import SummaryWriter
 from data_util.dataset import Data, Split
 from torch import distributed as dist
 from torch.nn.parallel import DistributedDataParallel as DDP
-
-parser = argparse.ArgumentParser()
-parser.add_argument('-bs', "--batch_size", type=int, default=4)
-parser.add_argument('-base', '--base_network', type=str, default='VTN')
-parser.add_argument('-n', "--n_cascades", type=int, default=3)
-parser.add_argument('-e', "--epochs", type=int, default=5)
-parser.add_argument("-r", "--round", type=int, default=20000)
-parser.add_argument("-v", "--val_steps", type=int, default=1000)
-parser.add_argument('-cf', "--checkpoint_frequency", default=0.5, type=float)
-parser.add_argument('-c', "--checkpoint", type=str, default=None)
-parser.add_argument('-ct', '--continue_training', action='store_true')
-parser.add_argument('--ctt', '--continue_training_this', type=str, default=None)
-parser.add_argument('--fixed_sample', type=int, default=100)
-parser.add_argument('-g', '--gpu', type=str, default='', help='GPU to use')
-parser.add_argument('-d', '--dataset', type=str, default='datasets/liver_cust.json', help='Specifies a data config')
-parser.add_argument("-ts", "--training_scheme", type=lambda x:int(x) if x.isdigit() else x, default='', help='Specifies a training scheme')
-parser.add_argument('-vs', '--val_scheme', type=lambda x:int(x) if x.isdigit() else x, default='', help='Specifies a validation scheme')
-parser.add_argument('-aug', '--augment', default=True, type=lambda x: x.lower() in ['true', '1', 't', 'y', 'yes'], help='Augment data')
-parser.add_argument('--lr', type=float, default=1e-4)
-parser.add_argument('--lr_scheduler', default = 'step', type=str, help='lr scheduler', choices=['linear', 'step', 'cosine'])
-parser.add_argument('--debug', action='store_true', help="run the script without saving files")
-parser.add_argument('--name', type=str, default='')
-parser.add_argument('--ortho', type=float, default=0.1, help="use ortho loss")
-parser.add_argument('--det', type=float, default=0.1, help="use det loss")
-parser.add_argument('--reg', type=float, default=1, help="use reg loss")
-parser.add_argument('-m', '--masked', choices=['soft', 'seg', 'hard'], default='',
-     help="mask the tumor part when calculating similarity loss")
-parser.add_argument('-mt', '--mask_threshold', type=float, default=2, help="volume changing threshold for mask")
-parser.add_argument('-mn', '--masked_neighbor', type=int, default=3, help="for masked neibor calculation")
-parser.add_argument('-vp', '--vol_preserve', type=float, default=0, help="use volume-preserving loss")
-parser.add_argument('-st', '--size_type', choices=['organ', 'tumor', 'tumor_gt', 'constant', 'dynamic', 'reg'], default='tumor', help = 'organ means VP works on whole organ, tumor means VP works on tumor region, tumor_gt means VP works on tumor region with ground truth, constant means VP ratio is a constant, dynamic means VP has dynamic weight, reg means VP is replaced by reg loss')
-parser.add_argument('--ks_norm', default='voxel', choices=['image', 'voxel'])
-parser.add_argument('-w_ksv', '--w_ks_voxel', default=1, type=float, help='Weight for voxel method in ks loss')
-parser.add_argument('-s1r', '--stage1_rev', type=lambda x: x.lower() in ['true', '1', 't', 'y', 'yes'], default=False, help="whether to use reverse flow in stage 1")
-parser.add_argument('-inv', '--invert_loss', action='store_true', help="invertibility loss")
-parser.add_argument('--surf_loss', default=0, type=float, help='Surface loss weight')
-parser.add_argument('-dc', '--dice_loss', default=0, type=float, help='Dice loss weight')
-parser.add_argument('-ic', '--in_channel', default=2, type=int, help='Input channel number')
-parser.add_argument('-trsf', '--soft_transform', default='sigm', type=str, help='Soft transform')
-parser.add_argument('-bnd_thick', '--boundary_thickness', default=0, type=float, help='Boundary thickness')
-parser.add_argument('-use2', '--use_2nd_flow', default=False, type=lambda x: x.lower() in ['true', '1', 't', 'y', 'yes'], help='Use 2nd flow')
-# mask calculation needs an extra mask as input
 import sys
 sys.argv = ['']
-parser.set_defaults(in_channel=3 if parser.parse_args().masked else 2)
-parser.set_defaults(stage1_rev=True if parser.parse_args().base_network == 'VXM' else False)
 
 # default conifg
 # -g 3 --name stage1 -m hard -vp 0.1 -st organ --debug -ts mini
-args=['-g', '3', '--name', 'stage1', '-m', 'soft', '-vp', '0.1', '-st', 'organ', '--debug', '-ts', 'lits', '-base', 'VTN', '-ts', 'lits']
+args=['-g', '3', '--name', 'stage1', '-m', 'soft', '-vp', '0.1', '-st', 'organ', '--debug', '-ts', 'lits', '-base', 'VTN', '-ts', 'lits', '-use2', '1', '-useb','1']
+from train import parser
 args = parser.parse_args(args)
 import subprocess
 GPU_ID = subprocess.getoutput('nvidia-smi --query-gpu=memory.free --format=csv,nounits,noheader | nl -v 0 | sort -nrk 2 | cut -f 1| head -n 1 | xargs')
@@ -103,11 +60,6 @@ with open(args.dataset, 'r') as f:
 # %%
 train_scheme = args.training_scheme or Split.TRAIN
 dataset = Data(args.dataset, rounds=None, scheme=train_scheme)
-#    # %%
-# # data.data_pairs = 
-# pairs = [data.data_pairs[i*(l-1):i*(l-1)+l-1] for i in range(l)]
-# pairs_id = [[(p[0]['id'], p[1]['id']) for p in pair] for pair in pairs]
-# pairs_id [-3:]
 
 # %%
 in_channels = args.in_channel
@@ -160,17 +112,37 @@ results = {
     'dice_soft': [],
     'dice_hard': [],
     'dice_organ': [],
+    'dice_unsup': [],
+    'tumor_rat_gt': [],
+    'tumor_rat_input': [],
 }
+#%%
+# create tqdm object without knowing the limit
+tq = tqdm.tqdm()
 for iteration, data in enumerate(loader):
-    if len(id2s)>=l:
-        break
+    # if len(id2s)>=l:
+    #     break
     # torch clear cache
     # torch.cuda.empty_cache()
     # if start_iter is not 0, the 'if' statement will work
-    if iteration>=len(loader): break
-    id2 = data['id2']
-    selected = np.array([i for i in range(len(id2)) if id2[i] not in id2s])
+    # if iteration>=len(loader): break
+    # id2 = data['id2']
+    # selected = np.array([i for i in range(len(id2)) if id2[i] not in id2s])
+    # moving, fixed, seg1, seg2 = moving[selected], fixed[selected], seg1[selected], seg2[selected]
+    # id1, id2 = np.array(id1), np.array(id2)
+    # id1, id2 = id1[selected], id2[selected]
+    
+    # if loop > 1000, stop
+    if iteration>500/4: break
+
+    seg2 = data['segmentation2'].cuda()
+    selected = (seg2>1.5).sum(dim=(1,2,3,4))>0
+    selected = selected.cpu().numpy()
     if len(selected)==0: continue
+    for k in data.keys():
+        if k in ['id1', 'id2']:
+            data[k] = np.array(data[k])[selected]
+        else: data[k] = data[k][selected]
 
     fixed, moving = data['voxel1'], data['voxel2']
     fixed = fixed.cuda()
@@ -179,9 +151,6 @@ for iteration, data in enumerate(loader):
     seg2 = data['segmentation2'].cuda()
     id1 = data['id1']
 
-    moving, fixed, seg1, seg2 = moving[selected], fixed[selected], seg1[selected], seg2[selected]
-    id1, id2 = np.array(id1), np.array(id2)
-    id1, id2 = id1[selected], id2[selected]
 
     ### Calc similarity to decide whether to precompute?
     if False:
@@ -213,10 +182,11 @@ for iteration, data in enumerate(loader):
     cfg_train = ml_collections.ConfigDict(args.__dict__)
     cfg_train['masked'] = 'soft'
     cfg_train['use_2nd_flow'] = True
+    # cfg_train['masked_threshold'] = 2
     fixed = fixed_fixed.expand_as(fixed)
     input_seg, compute_mask = model.pre_register(fixed, moving, None, training=False, cfg=cfg_train)
 
-    id2s = id2s.union(set(id2))
+    # id2s = id2s.union(set(id2))
     # tq.write(str(len(id2s)))
     tq.update(len(compute_mask))
     # print(cfg_train)
@@ -232,6 +202,15 @@ for iteration, data in enumerate(loader):
             results['dice_soft'].extend(dice)
             dice, jac = dice_jaccard(input_seg>0.5, seg2>0.5)
             results['dice_organ'].extend(dice)
+            dice, jac = dice_jaccard(input_seg>0.5, seg2>1.5)
+            results['dice_unsup'].extend(dice)
+            tumor_rat_gt = ((compute_mask>0.5)& (seg2>1.5)).sum(dim=(1,2,3,4)).float() / (seg2>1.5).sum(dim=(1,2,3,4)).float()
+            tumor_rat_input = ((compute_mask>0.2)& (seg2>0.5)).sum(dim=(1,2,3,4)).float() / (compute_mask>0.2).sum(dim=(1,2,3,4)).float()
+            results['tumor_rat_gt'].extend(tumor_rat_gt)
+            results['tumor_rat_input'].extend(tumor_rat_input)
+        for k in results:
+            print(k, results[k][-1])
+
     if False:
         # tq.update(len(id2))
         for i in range(len(id2)):
@@ -239,8 +218,12 @@ for iteration, data in enumerate(loader):
             h5f[id2[i]].create_dataset('input_seg', data=input_seg[i].cpu().numpy(), dtype='float32')
             h5f[id2[i]].create_dataset('compute_mask', data=compute_mask[i].cpu().numpy(), dtype='float32')
 
+#%% rm 0s in results
+for k in results:
+    results[k] = [x for x in results[k] if x>0.01]
 #%%
 for k in results:
+    print(len(results[k]))
     print(k, torch.stack(results[k]).mean())
 # %%
 # h5f.close()

@@ -45,7 +45,7 @@ val_transforms = Compose(
     ]
 )
 # dicom to nii for better processing
-if True:
+if False:
     root_liver = '/home/hynx/regis/zdongzhong/lm'
     for i1, i, in enumerate(sorted(pa(root_liver).glob('P*'))):
         for i2,j in enumerate(sorted(pa(i).glob('ST*'))):
@@ -152,14 +152,17 @@ def bbox_seg(seg):
     bbox = np.array([np.min(bbox[0]), np.min(bbox[1]), np.min(bbox[2]), np.max(bbox[0]), np.max(bbox[1]), np.max(bbox[2])])
     return bbox
 def crop(seg, bbox, pad=5):
+    # pad: tdl-bur
+    if isinstance(pad, int):
+        pad = [pad, pad, pad, pad, pad, pad]
     bbox = bbox.copy()
     # increase bbox by pad
-    bbox[0] = max(bbox[0] - pad, 0)
-    bbox[1] = max(bbox[1] - pad, 0)
-    bbox[2] = max(bbox[2] - pad, 0)
-    bbox[3] += pad
-    bbox[4] += pad
-    bbox[5] += pad
+    bbox[0] = max(bbox[0] - pad[0], 0)
+    bbox[1] = max(bbox[1] - pad[1], 0)
+    bbox[2] = max(bbox[2] - pad[2], 0)
+    bbox[3] += pad[3]
+    bbox[4] += pad[4]
+    bbox[5] += pad[5]
     return seg[bbox[0]:bbox[3]+1, bbox[1]:bbox[4]+1, bbox[2]:bbox[5]+1]
 
 def orient(data):
@@ -180,20 +183,28 @@ def write_h5(f, id, img, seg):
     data = data.astype(np.uint8)
     seg = seg.astype(np.uint8)
     # store data and seg as 'volume' and 'segmentation' dataset
+    if 'volume' in f[group]:
+        del f[group]['volume']
     f[group].create_dataset('volume', data=data, dtype='uint8')
+    if 'segmentation' in f[group]:
+        del f[group]['segmentation']
     f[group].create_dataset('segmentation', data=seg, dtype='uint8')
 # for 1-4: just 
 
 import h5py
-h5file = '/home/hynx/regis/zdongzhong/nifti/liver_test.h5'
-if not pa(h5file).exists():
-    h5file = h5py.File(h5file, 'w')
+h5file = '/home/hynx/regis/zdongzhong/nifti/liver_test10.h5'
+# if not pa(h5file).exists():
+h5file = h5py.File(h5file, 'r+')
 for t1, t1_seg in zip(
     sorted(pa('/home/hynx/regis/zdongzhong/nifti/liver_ts').glob('*.nii.gz')),
     sorted(pa('/home/hynx/regis/zdongzhong/nifti/liver_seg').glob('*.nii.gz'))
 ):
-    print(t1, t1_seg)
     data_name = pa(t1_seg)
+    pad =5
+    if '4-0' in str(data_name):
+        pad = (150,5,5,5,5,5)
+    else: continue
+    print(t1, t1_seg)
     t1 = nib.load(t1).get_fdata()
     t1_seg = nib.load(t1_seg).get_fdata()
     t1 = torch.from_numpy(t1)
@@ -202,8 +213,8 @@ for t1, t1_seg in zip(
     l_seg = getLargestCC(t1_seg>0)
     bbox = bbox_seg(l_seg)
     t1_seg[~l_seg] = 0
-    t1_seg = crop(t1_seg, bbox, 5)
-    t1 = crop(t1, bbox, 5)
+    t1_seg = crop(t1_seg, bbox, pad)
+    t1 = crop(t1, bbox, pad)
     print(t1.shape, t1_seg.shape)
     # if 'P5' not in str(data_name):
     t1 = orient(t1)
@@ -218,10 +229,11 @@ for t1, t1_seg in zip(
     combo_imgs(dt1, dt1_seg, axis=0, idst=5).save('/home/hynx/regis/zdongzhong/images/liver/{}_combo.png'.format(data_name.name[:-7]))
     seg_on_img = draw_seg_on_vol(dt1, dt1_seg.long(), inter_dst=5, to_onehot=True)
     show_img(seg_on_img, norm=False, inter_dst=1).save('/home/hynx/regis/zdongzhong/images/liver/{}.png'.format(data_name.name[:-7]))
+    print('save to ', '/home/hynx/regis/zdongzhong/images/liver/{}.png'.format(data_name.name[:-7]))
 
     # save h5
-    # write_h5(h5file, data_name.name[1:4], dt1, dt1_seg)
-
+    write_h5(h5file, data_name.name[1:4], dt1, dt1_seg)
+h5file.close()
 #%% rename cases
 if False:
     from pathlib import Path as pa

@@ -85,14 +85,15 @@ parser.set_defaults(stage1_rev=True if parser.parse_args().base_network == 'VXM'
 parser.set_defaults(n_cascades=1 if parser.parse_args().base_network != 'VTN' else 3)
 parser.set_defaults(use_affine=0 if parser.parse_args().base_network == 'DMR' else 1)
 
-args = parser.parse_args()
-# if args.gpu:
-#     os.environ["CUDA_VISIBLE_DEVICES"] = args.gpu
-# set gpu to the one with most free memory
-import subprocess
-GPU_ID = subprocess.getoutput('nvidia-smi --query-gpu=memory.free --format=csv,nounits,noheader | nl -v 0 | sort -nrk 2 | cut -f 1| head -n 1 | xargs')
-print('Using GPU', GPU_ID)
-os.environ['CUDA_VISIBLE_DEVICES'] = GPU_ID
+if __name__=='__main__':
+    args = parser.parse_args()
+    # if args.gpu:
+    #     os.environ["CUDA_VISIBLE_DEVICES"] = args.gpu
+    # set gpu to the one with most free memory
+    import subprocess
+    GPU_ID = subprocess.getoutput('nvidia-smi --query-gpu=memory.free --format=csv,nounits,noheader | nl -v 0 | sort -nrk 2 | cut -f 1| head -n 1 | xargs')
+    print('Using GPU', GPU_ID)
+    os.environ['CUDA_VISIBLE_DEVICES'] = GPU_ID
 
 def reduce_mean(tensor):
     if dist.is_initialized():
@@ -311,8 +312,15 @@ def main():
                 rand_mask = torch.rand_like(mask.float())
                 # tl_ratio = (mask.sum(dim=(1,2,3,4)).float() / (mask_moving.sum(dim=(1,2,3,4)).float()))
                 tl_ratio = tmask.sum().float() / omask.sum().float()
-                rand_mask[tmask] = (rand_mask[tmask] <= args.mask_seg_dice).float()
-                rand_mask[~tmask] = (rand_mask[~tmask] <= (1-args.mask_seg_dice)/(1/tl_ratio-1)).float()
+                ad = args.mask_seg_dice
+                # uniform distribution between 0.1*ad and 0.2*ad
+                lb = 3
+                ub = 5
+                inter_sect_ratio = torch.rand_like(tl_ratio) * (ub-lb) * ad + lb * ad
+                k = inter_sect_ratio # use k
+                o_exc_t = 1/tl_ratio - 1
+                rand_mask[tmask] = (rand_mask[tmask] <= inter_sect_ratio).float()
+                rand_mask[~tmask] = (rand_mask[~tmask] <= (2*k/ad-(1+k))/o_exc_t).float()
                 rand_mask[omask] = rand_mask[omask] + 1
                 rand_mask[~omask] = 0
                 return rand_mask

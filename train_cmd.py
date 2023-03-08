@@ -12,13 +12,21 @@ parser.add_argument('-d', '--dataset', type= lambda x: {
                     }[x.lower()]
                     , default='liver', help='brain or liver')
 ### Use Normal? Seg?  or adaptive? or hard?
+rsv=-1
+hv =2
 def mode_(x):
-    dct = {'normal': 'normal', 'seg': 'seg', 'adaptive': 'adaptive', 'organ': 'unsup-organ', 'tumor':'unsup-tumor', 'random-seg': 'random-seg',
-                        'n': 'normal', 's': 'seg', 'a': 'adaptive', 'o': 'unsup-organ', 't': 'unsup-tumor', 'rs': 'random-seg',
+    dct = {'normal': 'normal', 'seg': 'seg', 'adaptive': 'adaptive', 'organ': 'unsup-organ', 'tumor':'unsup-tumor', 'random-seg': 'random-seg', 'hard': 'hard',
+                        'n': 'normal', 's': 'seg', 'a': 'adaptive', 'o': 'unsup-organ', 't': 'unsup-tumor', 'rs': 'random-seg', 'h': 'hard',
                     }
     if x.lower() in dct: return dct[x.lower()]
-    # if x.lower().startswith('rs') or x.lower().startswith('random-seg'):
-    #     return 'random-seg'          
+    if x.lower().startswith('rs-') or x.lower().startswith('random-seg'):
+        rsv = float(x.split('-')[-1])
+        globals()['rsv'] = rsv
+        return f'random-seg{rsv}'          
+    elif x.lower().startswith('h-') or x.lower().startswith('hard'):
+        hv = float(x.split('-')[-1])
+        globals()['hv'] = hv
+        return f'hard{hv}'
 parser.add_argument('-m', '--mode', type=lambda x:mode_(x)
                     , default='', help='normal or seg or adaptive')
 ### Normal training or Mini Experiments
@@ -50,19 +58,25 @@ elif args.mode == 'seg':
     command['-m'] = 'seg'
     command['-vp'] = '0.1'
     command['-st'] = 'tumor'
-elif args.mode == 'random-seg':
+elif args.mode.startswith('random-seg'):
     command['-m'] = 'seg'
     command['-vp'] = '0.1'
     command['-st'] = 'tumor'
-    command['-msd'] = '0.1'
+    command['-msd'] = f'{rsv}'
 elif args.mode == 'adaptive':
     command['-m'] = 'soft'
     command['-trsf'] = 'sigm'
-    command['-use2'] = '0'
+    command['-use2'] = '1'
     command['-bnd_thick'] = '0.5'
     command['--mask_threshold'] = '1.5'
     command['-vp'] = '0.1'
     command['-st'] = 'dynamic'
+elif args.mode.startswith('hard'):
+    command['-m'] = 'hard'
+    command['--mask_threshold'] = f'{hv}'
+    command['-bnd_thick'] = '0.5'
+    command['-vp'] = '0.1'
+    command['-st'] = 'tumor'
 elif args.mode == 'unsup-organ':
     command['-m'] = 'hard'
     command['--mask_threshold'] = '-1'

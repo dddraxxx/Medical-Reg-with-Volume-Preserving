@@ -96,13 +96,14 @@ def visualize_3d(data, width=5, inter_dst=5, save_name=None, print_=False, color
 
 def normalize(data, dim=3, ct=False):
     data = tt(data)
+    dim = min(3, data.dim())
     if ct:
-        data1 = data.flatten(start_dim=-3)
+        data1 = data.flatten(start_dim=-dim)
         l = data1.shape[-1]
         upper = data.kthvalue(int(0.95*l), dim=-1)
         lower = data.kthvalue(int(0.05*l), dim=-1)
         data = data.clip(lower, upper)
-    return PyTMinMaxScalerVectorized()(data, dim=3)
+    return PyTMinMaxScalerVectorized()(data, dim=dim)
 
 class PyTMinMaxScalerVectorized(object):
     """
@@ -157,6 +158,8 @@ def draw_seg_on_vol(data, lb, if_norm=True, alpha=0.3, colors=["green", "red", "
                             colors=colors if len(l)<4 else None,
                         ))
     return torch.stack(res)/255
+
+
     
 def show_img(res, save_path=None, norm=True, cmap=None, inter_dst=5) -> Image:
     import torchvision.transforms as T
@@ -164,7 +167,7 @@ def show_img(res, save_path=None, norm=True, cmap=None, inter_dst=5) -> Image:
     if res.ndim>=3:
         return T.ToPILImage()(visualize_3d(res, cmap=cmap, inter_dst=inter_dst))
     # normalize res
-    res = (res-res.min())/(res.max()-res.min())
+    # res = (res-res.min())/(res.max()-res.min())
 
     pimg = T.ToPILImage()(res)
     if save_path:
@@ -307,7 +310,21 @@ def quick_cal_rev_flow_gpu(flow):
     flow = flow.permute(0, 2, 3, 4, 1).reshape(bs, -1, 3) # B, H*W*D, 3
     points = xi+flow
     values = -flow
+
+from skimage.segmentation import find_boundaries
+def find_bound(seg, mode="outer"):
+    '''
+    Find boundaries of a segmentation.
+
+    Args:
+        seg: (D,H,W)
     
+    Returns:
+        bound: (D,H,W)
+    '''
+    bound = find_boundaries(seg, mode='outer')
+    return bound
+
 def find_surf(seg, kernel=3, thres=1):
     '''
     Find near-surface voxels of a segmentation.
@@ -322,9 +339,22 @@ def find_surf(seg, kernel=3, thres=1):
     if thres<=0:
         return torch.zeros_like(seg).bool()
     pads = tuple((kernel-1)//2 for _ in range(6))
-    seg_k = F.pad(seg, pads, mode='constant', value=0).unfold(2, kernel, 1).unfold(3, kernel, 1).unfold(4, kernel, 1)
+    seg_k = F.pad(seg, pads, mode='constant', value=0).unfold(-3, kernel, 1).unfold(-3, kernel, 1).unfold(-3, kernel, 1)
     seg_num = seg_k.sum(dim=(-1,-2,-3))
     surf = (seg_num<(kernel**3)*thres) & seg.bool()
     # how large a boundary we want to remove?
     # surf = (seg_num<(kernel**3//2)) & seg.bool()
     return surf
+
+class OnPlt:
+    def __init__(self, **kargs):
+        self.kargs = kargs
+        
+    def __enter__(self):
+        plt.figure(**self.kargs)
+        
+    def __exit__(self, exc_type, exc_value, traceback):
+        plt.close()
+        if exc_type is not None:
+            print(f'An exception of type {exc_type} occurred with value {exc_value}.')
+        return False

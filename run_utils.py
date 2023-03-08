@@ -5,13 +5,14 @@ from tools.utils import *
 
 stage1_cfg = {
     'liver': {
-        'VTN': './logs/liver/VTN/1/Jan08_180325_normal-vtn',
+        # 'VTN': './logs/liver/VTN/1/Jan08_180325_li1_VTN_normal-vtn',
+        'VTN': '/home/hynx/regis/recursive-cascaded-networks/logs/liver/VTN/1/Jan08-180325_li1_VTN_normal-vtn',
         'VXM': './logs/liver/VXM/1/Mar01-191032_1_VXMx1_normal__',
         'TSM': './logs/liver/TSM/1/Mar02-033226_1_TSMx1_normal__'
     },
     'brain': {
         'VTN': './logs/brain/VTN/1/Mar02-050938_1_VTNx3_normal___',
-        'VXM': '',
+        'VXM': './logs/brain/VXM/1/Mar02-141247_1_VXMx1_normal__',
         'TSM': './logs/brain/TSM/1/Mar02-202418_br1_TSMx1_normal__'
     },
 }
