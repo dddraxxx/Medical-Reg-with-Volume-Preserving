@@ -34,7 +34,6 @@
       "brats-train": 1.0
     },
     "2": {
-      "brats-val": 1.0
       "brain-test": 1.0
     },
     "mini": {
