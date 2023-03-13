@@ -115,13 +115,6 @@ if True:
         # print('data shape', input['image'].shape)
         # save to npy
         # np.save('/home/hynx/regis/dongzhong/nifti/liver/P{}-{}.npy'.format(i1, i2), input['image'][0])
-        
-    root_liver = '/home/hynx/regis/zdongzhong/lm'
-    root_brain = '/home/hynx/regis/zdongzhong/dcom/brain'
-    for i1, i, in enumerate(sorted(pa(root_brain).glob('P*'))):
-        # for i2,j in enumerate(sorted(pa(i).glob('ST*'))):
-        for i2,j in enumerate(sorted(pa(i).glob('**/SE-1'))):
-            pass
 
     def br_niigze(i,j):
         reader = sitk.ImageSeriesReader()
@@ -163,8 +156,31 @@ if True:
         # pprint.pprint(input['image_meta_dict'])
         img_dir = '/home/hynx/regis/zdongzhong/images/brain_nii'
         pa(img_dir).mkdir(exist_ok=True)
-        show_img(input['image'][0], inter_dst=2).save(f'{img_dir}/P{i1}-{i2}.png')
+        show_img(input['image'], inter_dst=5).save(f'{img_dir}/P{i1}-{i2}.png')
         print('saved image to', f'{img_dir}/P{i1}-{i2}.png')
+        print()
+
+            
+    root_liver = '/home/hynx/regis/zdongzhong/lm'
+    root_brain = '/home/hynx/regis/zdongzhong/dcom/brain'
+    brain_sen = {
+        "1-1":1,
+        "1-2":1,
+        "2-1":2,
+        "2-2":1,
+        "3-1":1,
+        "3-2":0,
+        "4-1":2,
+        "4-2":1,
+        "5-1":0,
+        "5-2":2,
+    }
+    for i1, i, in enumerate(sorted(pa(root_brain).glob('P*'))):
+        # for i2,j in enumerate(sorted(pa(i).glob('ST*'))):
+        se_i = brain_sen[str(i)[-3:]]
+        print(i, se_i)
+        for i2,j in enumerate(sorted(pa(i).glob(f'**/SE{se_i}'))):
+            br_niigze(i,j)
 #%% extract brain mask
 import nibabel as nib
 import numpy as np
@@ -199,7 +215,7 @@ def strip_skull(src_path, dest_path):
     plt.savefig(save_name)
     plt.close()
 
-brain_nii_path = '/home/hynx/regis/zdongzhong/nifti/brain'
+brain_nii_path = '/home/hynx/regis/zdongzhong/nifti/brain/original'
 srcs, dests = [], []
 for im in sorted(pa(brain_nii_path).glob('P*.nii.gz')):
     srcs.append(str(im))
@@ -208,38 +224,48 @@ for im in sorted(pa(brain_nii_path).glob('P*.nii.gz')):
 # strip_skull(srcs[0], dests[0])
 pool = Pool(4)
 pool.starmap(strip_skull, zip(srcs, dests))
+#%% to nnunet segment
+from pathlib import Path as pa
+ddir = '/home/hynx/regis/zdongzhong/nifti/brain/original/striped'
+for i in sorted(pa(ddir).glob('P*.nii.gz')):
+    i.rename(str(i).replace('.nii.gz', '_0000.nii.gz'))
+    print(i, i.name.replace('.nii.gz', '_0000.nii.gz'))
+
+#  nnUNet_predict -i /home/hynx/regis/zdongzhong/nifti/brain/original/striped -o /home/hynx/regis/zdongzhong/nifti/brain/seg_unet -t 83 -f 0
+#  nnUNet_predict -i /home/hynx/regis/zdongzhong/nifti/brain/original/striped -o /home/hynx/regis/zdongzhong/nifti/brain/seg_unet_bg -t 83 -f 2 -tr nnUNetTrainerV2BraTSRegionsBG
+#%% rename cases
+from pathlib import Path as pa
+for i in pa('/home/hynx/regis/zdongzhong/nifti/brain/original/striped').glob('*.nii.gz'):
+    # copy to parent
+    print(i)
+    new_name = i.name.replace('_0000','')
+    # copy and rename
+    import shutil
+    shutil.copy(i, '/home/hynx/regis/zdongzhong/nifti/brain/striped/'+new_name)
 
 #%% visualize
-d_path = '/home/hynx/regis/zdongzhong/nifti/brain/striped/P3-1_0000.nii.gz'
-s_path = '/home/hynx/regis/zdongzhong/nifti/brain/seg_unet/P3-1.nii.gz'
+import nibabel as nib
+import numpy as np
+import matplotlib.pyplot as plt
+from monai.visualize import matshow3d
+from tools.utils import *
+d_path = '/home/hynx/regis/zdongzhong/nifti/brain/striped/'
+s_path = '/home/hynx/regis/zdongzhong/nifti/brain/seg_unet/'
 
-fig, (ax1, ax2) = plt.subplots(1, 2)
-matshow3d(nib.load(d_path).get_fdata(), fig=ax1, cmap='gray', margin=1)
-matshow3d(nib.load(s_path).get_fdata()>1, fig=ax2, cmap='gray', margin=1)
-
-
+ims = []
+for d, s in zip(sorted(pa(d_path).glob('P*.nii.gz')), sorted(pa(s_path).glob('P*.nii.gz'))):
+    # fig, (ax1, ax2) = plt.subplots(1, 2)
+    # matshow3d(nib.load(d_path).get_fdata(), fig=ax1, cmap='gray', margin=1)
+    # matshow3d(nib.load(s_path).get_fdata()>1, fig=ax2, cmap='gray', margin=1)
+    im = combo_imgs(nib.load(d).get_fdata(), 
+            (nib.load(s).get_fdata()).astype(float),
+            idst=1)
+    ims.append(im)
+#%%
+# ims[0]
 
 #%% get h5
-root = '/home/hynx/regis/zdongzhong/nifti/brain'
-for im in sorted(pa(root).glob('P*.nii.gz')):
-    print(im)
-    # img = nib.load(im)
-    # img = img.get_fdata()
-    # read by ant
-    img = ants.image_read(str(im))
-    print(img)
-    # get mask
-    mask = ants.get_mask(img, high_thresh=1000)
-    img = img.numpy()
-    mask = mask.numpy()
-    import matplotlib.pyplot as plt
-    # 2 subplots
-    fig, (ax1, ax2) = plt.subplots(1, 2)
-    matshow3d(mask, cmap='gray', fig=ax1)
-    matshow3d(img, cmap='gray', fig=ax2)
-# %% read_nii
 import nibabel as nib
-# resize to 64x64x64
 import torch.nn.functional as F
 import torch
 from monai.transforms import (
@@ -248,14 +274,8 @@ from monai.transforms import (
     ScaleIntensityRanged,
     Orientationd,
     EnsureTyped,
-)
-
-val_transforms = Compose(
-    [
-        ScaleIntensityRanged(keys=["image"], a_min=-175, a_max=250, b_min=0.0, b_max=1.0, clip=True),
-        # Orientationd(keys=["image", "label"], axcodes="RAS"),
-        EnsureTyped(keys=["image","label"], device='cpu', track_meta=True),
-    ]
+    CropForegroundd,
+    NormalizeIntensityd,
 )
 from tools.utils import *
 from pathlib import Path as pa
@@ -312,86 +332,136 @@ def write_h5(f, id, img, seg):
     f[group].create_dataset('segmentation', data=seg, dtype='uint8')
 # for 1-4: just 
 
-if True:
-    br_val_transforms = Compose(
+li_val_transforms = Compose(
+    [
+        ScaleIntensityRanged(keys=["image"], a_min=-175, a_max=250, b_min=0.0, b_max=1.0, clip=True),
+        # Orientationd(keys=["image", "label"], axcodes="RAS"),
+        EnsureTyped(keys=["image","label"], device='cpu', track_meta=True),
+    ]
+)
+def li2h5():
+    data_name = pa(t1_seg)
+    pad =5
+    if '4-0' in str(data_name):
+        pad = (150,5,5,5,5,5)
+    # else: continue
+    print(t1, t1_seg)
+    t1 = nib.load(t1).get_fdata()
+    t1_seg = nib.load(t1_seg).get_fdata()
+    t1 = torch.from_numpy(t1)
+    t1_seg = torch.from_numpy(t1_seg)
+    # choose largest connected component
+    l_seg = getLargestCC(t1_seg>0)
+    bbox = bbox_seg(l_seg)
+    t1_seg[~l_seg] = 0
+    t1_seg = crop(t1_seg, bbox, pad)
+    t1 = crop(t1, bbox, pad)
+    print(t1.shape, t1_seg.shape)
+    # if 'P5' not in str(data_name):
+    t1 = orient(t1)
+    t1_seg = orient(t1_seg)
+    t1 = F.interpolate(t1.unsqueeze(0).unsqueeze(0), size=(128,128,128), mode='trilinear').squeeze(0).squeeze(0)
+    t1_seg = F.interpolate(t1_seg.unsqueeze(0).unsqueeze(0), size=(128,128,128), mode='nearest').squeeze(0).squeeze(0)
+    print(t1.shape, t1_seg.shape)
+    
+    img_dir = '/home/hynx/regis/zdongzhong/images/liver/'
+    pa(img_dir).mkdir(exist_ok=True)
+    show_img(t1, inter_dst=1).save('{}{}_img.png'.format(img_dir, data_name.name[:-7]))
+    t1 = F.interpolate(t1.unsqueeze(0).unsqueeze(0), size=(128,128,128), mode='trilinear').squeeze(0).squeeze(0)
+    show_img(t1, inter_dst=5).save('{}{}_img_128.png'.format(img_dir, data_name.name[:-7]))
+    print('save img to ', '{}{}_img.png'.format(img_dir, data_name.name[:-7]))
+
+    dct = li_val_transforms({"image": t1, "label": t1_seg})
+    dt1 = dct['image']
+    print(dt1.shape, )
+    show_img(t1, inter_dst=5).save('{}{}_img_128h5.png'.format(img_dir, data_name.name[:-7]))
+    # combo_imgs(dt1, dt1_seg, axis=0, idst=5).save('/home/hynx/regis/zdongzhong/images/liver/{}_combo.png'.format(data_name.name[:-7]))
+    # seg_on_img = draw_seg_on_vol(dt1, dt1_seg.long(), inter_dst=5, to_onehot=True)
+    # show_img(seg_on_img, norm=False, inter_dst=1).save('/home/hynx/regis/zdongzhong/images/liver/{}.png'.format(data_name.name[:-7]))
+    # print('save to ', '/home/hynx/regis/zdongzhong/images/liver/{}.png'.format(data_name.name[:-7]))
+
+    # save h5
+    write_h5(h5file, data_name.name[1:4], dt1, dt1_seg)
+
+br_val_transforms = Compose(
     [
         EnsureTyped(keys=["image"]),
         # Orientationd(keys=["image"], axcodes="RAS"),
-        CropForegroundd(keys=["image"], source_key="image"),
         # Spacingd(
         #     keys=["image"],
         #     pixdim=(3., 1.0, 1.0),
         #     mode=("bilinear"),
         # ),
-        NormalizeIntensityd(keys="image", nonzero=True, channel_wise=True),
+        # CropForegroundd(keys=["image"], source_key="label"),
+        # NormalizeIntensityd(keys="image", nonzero=True, channel_wise=True),
     ]
 )
-    import h5py
-    h5file = '/home/hynx/regis/zdongzhong/nifti/brain_test10.h5'
-    # if not pa(h5file).exists():
-    h5file = h5py.File(h5file, 'w')
-    # for t1, t1_seg in zip(
-    #     sorted(pa('/home/hynx/regis/zdongzhong/nifti/liver_ts').glob('*.nii.gz')),
-    #     sorted(pa('/home/hynx/regis/zdongzhong/nifti/liver_seg').glob('*.nii.gz'))
-    # ):
-    for t1 in (sorted(pa('/home/hynx/regis/zdongzhong/nifti/brain').glob('*.nii.gz'))
-    ):
-        t1_seg = t1
-        data_name = pa(t1_seg)
-        pad =5
-        if '4-0' in str(data_name):
-            pad = (150,5,5,5,5,5)
-        # else: continue
-        print(t1, t1_seg)
-        t1 = nib.load(t1).get_fdata()
-        t1_seg = nib.load(t1_seg).get_fdata()
-        t1 = torch.from_numpy(t1)
-        t1_seg = torch.from_numpy(t1_seg)
-        if False:
-            # choose largest connected component
-            l_seg = getLargestCC(t1_seg>0)
-            bbox = bbox_seg(l_seg)
-            t1_seg[~l_seg] = 0
-            t1_seg = crop(t1_seg, bbox, pad)
-            t1 = crop(t1, bbox, pad)
-            print(t1.shape, t1_seg.shape)
-            # if 'P5' not in str(data_name):
-            t1 = orient(t1)
-            t1_seg = orient(t1_seg)
-            t1 = F.interpolate(t1.unsqueeze(0).unsqueeze(0), size=(128,128,128), mode='trilinear').squeeze(0).squeeze(0)
-            t1_seg = F.interpolate(t1_seg.unsqueeze(0).unsqueeze(0), size=(128,128,128), mode='nearest').squeeze(0).squeeze(0)
-        print(t1.shape, t1_seg.shape)
+def br2h5(t1, t1_seg):
+    data_name = pa(t1_seg)
+    print(t1, t1_seg)
+    
+    ## read data
+    t1 = nib.load(t1).get_fdata()
+    t1_seg = nib.load(t1_seg).get_fdata()
+    t1 = torch.from_numpy(t1)
+    t1_seg = torch.from_numpy(t1_seg)
+
+    ### get seg
+    # get foreground from img
+    # t1_seg[t1_seg>0] = t1_seg[t1_seg>0]+1
+    t1_seg[t1_seg>1] = 2
+    t1_seg[(t1>t1.min()) & (t1_seg<=0)] = 1
+    # choose largest connected component
+    l_seg = getLargestCC(t1_seg>0)
+    print('original_shape', t1.shape, l_seg.shape, t1_seg.shape)
+    bbox = bbox_seg(l_seg)
+    t1_seg[~torch.from_numpy(l_seg)] = 0
+    ## no need to crop cause already crop foreground in nii.gz
+    pad =20
+    t1_seg = crop(t1_seg, bbox, pad)
+    t1 = crop(t1, bbox, pad)
+    print('after_crop', t1.shape, t1_seg.shape)
+
+    # get orient
+    # t1 = t1.permute(2,1,0)
+    # t1_seg = t1_seg.permute(2,1,0)
+    img_dir = '/home/hynx/regis/zdongzhong/images/brain/'
+    pa(img_dir).mkdir(exist_ok=True)
+    show_img(t1, inter_dst=1).save('{}{}_original_img.png'.format(img_dir, data_name.name[:-7]))
+    print('save img to ', '{}{}_original_img.png'.format(img_dir, data_name.name[:-7]))
+
+    t1 = F.interpolate(t1.unsqueeze(0).unsqueeze(0), size=(128,128,128), mode='trilinear').squeeze(0).squeeze(0)
+    t1_seg = F.interpolate(t1_seg.unsqueeze(0).unsqueeze(0), size=(128,128,128), mode='nearest').squeeze(0).squeeze(0)
+    print(t1.shape, t1_seg.shape)  
+    ## to 128x128x128
+    pa(img_dir).mkdir(exist_ok=True)
+    # show_img(t1, inter_dst=5).save('{}{}_img_128.png'.format(img_dir, data_name.name[:-7]))
+
+    ## preprocess
+    dct = br_val_transforms({"image": t1, "label": t1_seg})
+    dt1 = dct['image']
+    dt1_seg = dct['label']
+    print(dt1.shape, )
+    show_img(t1, inter_dst=5).save('{}{}_128h5.png'.format(img_dir, data_name.name[:-7]))
+    combo_imgs(dt1, dt1_seg, axis=0, idst=5).save('/home/hynx/regis/zdongzhong/images/brain/{}_combo.png'.format(data_name.name[:-7]))
+
+    seg_on_img = draw_seg_on_vol(dt1, dt1_seg.round().long(), inter_dst=5, to_onehot=True, colors=['red', 'green', 'blue', 'yellow'])
+    show_img(seg_on_img, norm=False, inter_dst=1).save('/home/hynx/regis/zdongzhong/images/brain/{}.png'.format(data_name.name[:-7]))
+    print('save to ', '/home/hynx/regis/zdongzhong/images/brain/{}.png'.format(data_name.name[:-7]))
+
+    # save h5
+    write_h5(h5file, data_name.name[1:4], dt1, dt1_seg)
+
+import h5py
+h5file = '/home/hynx/regis/zdongzhong/nifti/brain_test_23.h5'
+# if not pa(h5file).exists():
+h5file = h5py.File(h5file, 'w')
+for t1, t1_seg in zip(
+    sorted(pa('/home/hynx/regis/zdongzhong/nifti/brain/striped').glob('*.nii.gz')),
+    sorted(pa('/home/hynx/regis/zdongzhong/nifti/brain/seg_unet').glob('*.nii.gz'))
+):
+    br2h5(t1, t1_seg)
         
-        img_dir = '/home/hynx/regis/zdongzhong/images/brain/'
-        pa(img_dir).mkdir(exist_ok=True)
-        show_img(t1, inter_dst=1).save('{}{}_img.png'.format(img_dir, data_name.name[:-7]))
-        t1 = F.interpolate(t1.unsqueeze(0).unsqueeze(0), size=(128,128,128), mode='trilinear').squeeze(0).squeeze(0)
-        show_img(t1, inter_dst=5).save('{}{}_img_128.png'.format(img_dir, data_name.name[:-7]))
-        print('save img to ', '{}{}_img.png'.format(img_dir, data_name.name[:-7]))
+h5file.close()
 
-        # dct = val_transforms({"image": t1, "label": t1_seg})
-        dct = br_val_transforms({"image": t1})
-        dt1 = dct['image']
-        print(dt1.shape, )
-        show_img(t1, inter_dst=5).save('{}{}_img_128h5.png'.format(img_dir, data_name.name[:-7]))
-        # combo_imgs(dt1, dt1_seg, axis=0, idst=5).save('/home/hynx/regis/zdongzhong/images/liver/{}_combo.png'.format(data_name.name[:-7]))
-        # seg_on_img = draw_seg_on_vol(dt1, dt1_seg.long(), inter_dst=5, to_onehot=True)
-        # show_img(seg_on_img, norm=False, inter_dst=1).save('/home/hynx/regis/zdongzhong/images/liver/{}.png'.format(data_name.name[:-7]))
-        # print('save to ', '/home/hynx/regis/zdongzhong/images/liver/{}.png'.format(data_name.name[:-7]))
-
-        # save h5
-        # write_h5(h5file, data_name.name[1:4], dt1, dt1_seg)
-        write_h5(h5file, data_name.name[1:4], dt1, np.zeros_like(dt1))
-    h5file.close()
-    #%% rename cases
-    if False:
-        from pathlib import Path as pa
-        for i in pa('/home/hynx/regis/dongzhong/nifti/liver').glob('*.nii.gz'):
-            # copy to parent
-            print(i)
-            new_name = i.name[:-7]+'_0000.nii.gz'
-            # copy and rename
-            import shutil
-            shutil.copy2(i, '/home/hynx/regis/dongzhong/nifti/liver_nnuent/'+new_name)
-
-#%% visualize
+#%%

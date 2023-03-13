@@ -177,7 +177,7 @@ def main():
                     fixed[seg2>1.5] = (org_mean[:,None,None,None,None]+noise)[seg2>1.5]
                     show_img(fixed[0,0]).save('3.jpg')
                 warped_, flows, agg_flows, affine_params = model(fixed, moving_, return_affine=True)
-                if 'normal' in args.checkpoint :#and False:
+                if 'normal' in args.checkpoint and False:
                     # remove noise
                     # fixed = fixed - noise
                     prev_flow = agg_flows[-1]
@@ -315,8 +315,8 @@ def main():
         elif args.only_vis_target:
             continue
         # visualize figures
-        if False and not args.use_ants:
-            dir = '/home/hynx/regis/recursive-cascaded-networks/figures/fig1'
+        if not args.use_ants:
+            dir = '/home/hynx/regis/recursive-cascaded-networks/figures/fig1/brain'
             # print(args.checkpoint)
             model_name = args.checkpoint.split('/')[-1].split('_')[3]
             dir = os.path.join(dir, model_name)
@@ -326,7 +326,7 @@ def main():
             jacs = jacobian_det(agg_flows[-1], return_det=True)[:,None]
             jacs = F.interpolate(jacs, size=fixed.shape[-3:], mode='trilinear', align_corners=True)
             for i in range(len(fixed)):
-                if 'test_3-0' not in id1[i]: continue
+                if 'ts_3-' not in id1[i]: continue
 
                 f, m, w = fixed[i,0], moving[i,0], warped[-1][i,0]
                 seg_f, seg_m, seg_w = seg1[i,0], seg2[i,0], w_seg2[i,0]
@@ -365,7 +365,7 @@ def main():
                     show_img(bnd_img, inter_dst=1).save('{}/{}_bnd.png'.format(dir, id))
                     print('save to {}/{}_bnd.png'.format(dir, id))
                     im_dct['bnd_img'] = bnd_img
-                    import ipdb; ipdb.set_trace()
+                    # import ipdb; ipdb.set_trace()
 
                 ### set jacobian
                 if True:
@@ -375,8 +375,9 @@ def main():
 
                     gt_bnd = find_boundaries(seg_w.cpu().numpy()>0.5, mode='outer', connectivity=1)
                     gt_bnd = torch.from_numpy(gt_bnd)
-                    gt_tum_bnd = find_boundaries(seg_w.cpu().numpy()>seg_thres, mode='outer', connectivity=1)
-                    gt_tum_bnd = torch.from_numpy(gt_tum_bnd)
+                    # gt_tum_bnd = find_boundaries(seg_w.cpu().numpy()>seg_thres, mode='outer', connectivity=1)
+                    # gt_tum_bnd = torch.from_numpy(gt_tum_bnd)
+                    gt_tum_bnd = find_2dbound(seg_w.cpu()>seg_thres, 3, thres=0.8)
                     
                     seg_on_jac = draw_seg_on_vol(jac, torch.stack([gt_bnd, gt_tum_bnd])
                                                  , inter_dst=5, alpha=1)
@@ -418,7 +419,7 @@ def main():
                     print('save to {}/{}_flow.png'.format(dir, id))
                     im_dct['flow_imgs'] = flow_imgs[::5]
 
-                selected_idx = 110
+                selected_idx = 80
                 se_idxs = list(range(0,128,5))
                 if True:
                     se_dir = '{}/{}/selected'.format(dir,id)

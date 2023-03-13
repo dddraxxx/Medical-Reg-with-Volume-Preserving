@@ -7,6 +7,10 @@
     "mrbr":{
       "path": "datasets/mrbr.h5",
       "type": "HDF5"
+    },
+    "br-ts":{
+      "path": "datasets/brain_test_23.h5",
+      "type": "HDF5"
     }
   },
   "image_size": [
@@ -23,31 +27,33 @@
   },
   "segmentation_class_value": {
     "brain": 1,
-    "tumor": 2,
-    // "3": 3,
-    // "4": 4,
-    // "5": 5,
-    // "6": 6,
-    // "7": 7,
-    // "8": 8,
-    // "9": 9,
-    // "10": 10
+    "tumor": 2
   },
   "schemes": {
     "1": {
       "brats-train": 1.0
     },
     "2": {
-      "brats-midi": 1.0
+      "brain-test": 1.0
     },
     "mini": {
       "brats-mini": 1.0
     },
     "mrbr": {
       "mrbr": 1.0
+    },
+    "brain_test": {
+      "brain_test": 1.0
     }
   },
   "subsets": {
+    "brain-test":[
+      ["br-ts/1-1", "br-ts/1-2"],
+      ["br-ts/2-1", "br-ts/2-2"],
+      ["br-ts/3-1", "br-ts/3-2"],
+      ["br-ts/4-1", "br-ts/4-2"],
+      ["br-ts/5-1", "br-ts/5-2"]
+    ],
     "mrbr": [
       "mrbr/1",
       "mrbr/2",

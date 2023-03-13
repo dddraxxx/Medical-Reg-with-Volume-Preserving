@@ -155,7 +155,7 @@ def draw_seg_on_vol(data, lb, if_norm=True, alpha=0.3, colors=["green", "red", "
                             (d).repeat(3, 1, 1),
                             l.bool(),
                             alpha=alpha,
-                            colors=colors if len(l)<4 else None,
+                            colors=colors,
                         ))
     return torch.stack(res)/255
 
@@ -163,6 +163,7 @@ def draw_seg_on_vol(data, lb, if_norm=True, alpha=0.3, colors=["green", "red", "
     
 def show_img(res, save_path=None, norm=True, cmap=None, inter_dst=5) -> Image:
     import torchvision.transforms as T
+    res = tt(res)
     if norm: res = normalize(res)
     if res.ndim>=3:
         return T.ToPILImage()(visualize_3d(res, cmap=cmap, inter_dst=inter_dst))
@@ -312,7 +313,7 @@ def quick_cal_rev_flow_gpu(flow):
     values = -flow
 
 from skimage.segmentation import find_boundaries
-def find_bound(seg, mode="outer"):
+def find_2dbound(seg, kernel=3, thres=0.5):
     '''
     Find boundaries of a segmentation.
 
@@ -322,8 +323,18 @@ def find_bound(seg, mode="outer"):
     Returns:
         bound: (D,H,W)
     '''
-    bound = find_boundaries(seg, mode='outer')
-    return bound
+    if thres<=0:
+        return torch.zeros_like(seg).bool()
+    pads = tuple((kernel-1)//2 for _ in range(6))
+    seg_k = F.pad(seg, pads, mode='constant', value=0).unfold(-3, kernel, 1).unfold(-3, kernel, 1).unfold(-3, kernel, 1)
+    ker = seg_k.new_tensor([
+        [[0,0,0],[0,0,0],[0,0,0]],
+        [[0,1,0],[1,1,1],[0,1,0]],
+        [[0,0,0],[0,0,0],[0,0,0]]
+        ])
+    seg_num = (seg_k*ker).sum(dim=(-1,-2,-3))
+    surf = (seg_num<ker.sum()) & seg.bool()
+    return surf
 
 def find_surf(seg, kernel=3, thres=1):
     '''
