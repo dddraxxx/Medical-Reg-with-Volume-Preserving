@@ -316,7 +316,7 @@ def main():
             continue
         # visualize figures
         if not args.use_ants:
-            dir = '/home/hynx/regis/recursive-cascaded-networks/figures/fig1/brain'
+            dir = './figures/fig1/brain'
             # print(args.checkpoint)
             model_name = args.checkpoint.split('/')[-1].split('_')[3]
             dir = os.path.join(dir, model_name)
