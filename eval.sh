@@ -88,4 +88,6 @@ msk_weight=/home/hynx/regis/recursive-cascaded-networks/logs/brain/VTN/1/Mar02-0
 # ours VXM
 /home/hynx/regis/recursive-cascaded-networks/logs/brain/VXM/1/Mar08-061257_br1_VXMx1_seg_seg_vp0.1sttumor
 # normal TSM
+/workspace/qihuad/iccv23_regis/Recursive-Cascaded-Networks/logs/brain/TSM/1/Mar02-202418_br1_TSMx1_normal__
 # ours TSM
+/workspace/qihuad/iccv23_regis/Recursive-Cascaded-Networks/logs/brain/TSM/1/Mar05-161549_br1_TSMx1_adaptive-u2bf_softthr1.5sigmbnd0.5st2bf_vp0.1stdynamic
