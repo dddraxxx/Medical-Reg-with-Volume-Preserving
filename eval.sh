@@ -65,5 +65,11 @@ msk_weight=/home/hynx/regis/recursive-cascaded-networks/logs/liver/VTN/1/Mar04-1
 msk_weight=/home/hynx/regis/recursive-cascaded-networks/logs/liver/VXM/1/Mar01-191032_1_VXMx1_normal__
 # eval_test $msk_weight $@
 msk_weight=/home/hynx/regis/recursive-cascaded-networks/logs/liver/VXM/1/Mar08-070844_li1_VXMx1_adaptive_softthr1.5sigmbnd0.5st2bf_vp0.1stdynamic
+# eval_test $msk_weight $@
+
+# TSM
+msk_weight=/workspace/qihuad/iccv23_regis/Recursive-Cascaded-Networks/logs/liver/TSM/1/Mar03-033707_li1_TSMx1_normal__
+# msk_weight=/workspace/qihuad/iccv23_regis/Recursive-Cascaded-Networks/logs/liver/TSM/1/Mar05-030624_li1_TSMx1_adaptive-u2bf_softthr1.5sigmbnd0.5st2bf_vp0.1stdynamic
+# msk_weight=/workspace/qihuad/iccv23_regis/Recursive-Cascaded-Networks/logs/liver/TSM/1/Mar06-023254_li1_TSMx1_seg_seg_vp0.1sttumor
 eval_test $msk_weight $@
 
