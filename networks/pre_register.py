@@ -108,7 +108,7 @@ class PreRegister(nn.Module):
         target_ratio = (w_moving_seg>0.5).sum(dim=(2,3,4), keepdim=True).float() / (mask_moving>0.5).sum(dim=(2,3,4), keepdim=True).float()
 
         ### better to calculate the ratio compared to the target ratio
-        if not cfg.use_2nd_flow:
+        if not cfg.use_2nd_flow or cfg.debug:
             flow_ratio = extract_tumor_mask(rs1_flow, w_moving_seg, n=cfg.masked_neighbor) * target_ratio
             if cfg.boundary_thickness>0:
                 flow_ratio = remove_boundary_weights(flow_ratio, w_moving_seg)
@@ -181,6 +181,31 @@ class PreRegister(nn.Module):
                 img_dict['soft_mask_on_seg2'] = visualize_3d(draw_seg_on_vol(dynamic_mask[0,0],
                                                                             seg2[0,0].round().long(),
                                                                             to_onehot=True, inter_dst=5), inter_dst=1)
+            # to visualize soft masks 
+            if cfg.debug:
+                dm1 = trsf_f(rev_flow_ratio[0,0])
+                dm2 = trsf_f(rev_flow_ratio2[0,0])
+                dm2[~(seg2[0,0]>0.5)] = 0
+                dm2[seg2[0,0]>0.5] += 0.2
+                show_img(dm2).save('3.jpg')
+                # save img1, img2
+                show_img(moving[0,0]).save('moving.jpg')
+                show_img(fixed[0,0]).save('fixed.jpg')
+                import ipdb; ipdb.set_trace()
+                rev_on_seg = draw_seg_on_vol(dm1, seg2[0,0].round().long(), to_onehot=True, inter_dst=5)
+                rev2_on_seg = draw_seg_on_vol(dm2, seg2[0,0].round().long(), to_onehot=True, inter_dst=5)
+
+                show_img(rev2_on_seg, inter_dst=1, norm=False).save('2.jpg')
+                show_img(rev_on_seg, inter_dst=1).save('1.jpg')
+                import torchvision.transforms as T
+                import ipdb; ipdb.set_trace()
+                i1 = T.ToPILImage()(rev_on_seg[18])
+                i2 = T.ToPILImage()(rev2_on_seg[18])
+                i1.save('1.png')
+                i2.save('2.png')
+                # dm12 = dm2 + dm1*(seg2[0,0]>1.5).float()
+                # rev12_on_seg = draw_seg_on_vol(dm12, seg2[0,0].round().long(), to_onehot=True, inter_dst=5)
+                # show_img(rev12_on_seg, inter_dst=1).save('3.jpg')
             returns = (input_seg, soft_mask)
         elif cfg.masked=='hard':
             # thres = torch.quantile(w_n, .9)
