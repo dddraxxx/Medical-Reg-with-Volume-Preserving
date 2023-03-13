@@ -48,6 +48,11 @@
   },
   "subsets": {
     "brain-test":[
+      ["br-ts/1-2", "br-ts/1-1"],
+      ["br-ts/2-2", "br-ts/2-1"],
+      ["br-ts/3-2", "br-ts/3-1"],
+      ["br-ts/4-2", "br-ts/4-1"],
+      ["br-ts/5-2", "br-ts/5-1"],
       ["br-ts/1-1", "br-ts/1-2"],
       ["br-ts/2-1", "br-ts/2-2"],
       ["br-ts/3-1", "br-ts/3-2"],

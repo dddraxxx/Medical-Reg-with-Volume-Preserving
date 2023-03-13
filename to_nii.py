@@ -416,7 +416,19 @@ def br2h5(t1, t1_seg):
     print('original_shape', t1.shape, l_seg.shape, t1_seg.shape)
     bbox = bbox_seg(l_seg)
     t1_seg[~torch.from_numpy(l_seg)] = 0
-    ## no need to crop cause already crop foreground in nii.gz
+    if '3-2' in str(data_name):
+        t1[t1>1000] = 1001
+        t1_seg[t1>1000][:8] = 0
+        t1_seg[t1>1000][-3:] = 0
+    # background value
+    mid_slice = np.s_[t1.shape[0]//2: t1.shape[0]//2 + 1]
+    def norm(x, seg):
+        # x[seg>0] = (x[seg>0]-x[seg>0].mean())/(x[seg>0].std()+1e-8)
+        return x[seg>0].mean(), x[seg>0].std()
+    mean, std = norm(t1[mid_slice], t1_seg[mid_slice])
+    t1[t1_seg>0] = (t1[t1_seg>0]-mean)/(std+1e-8)
+    t1[t1_seg==0] = t1[t1_seg>0].min()-0.1
+    # crop
     pad =20
     t1_seg = crop(t1_seg, bbox, pad)
     t1 = crop(t1, bbox, pad)
