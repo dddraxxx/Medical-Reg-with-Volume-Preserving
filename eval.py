@@ -181,13 +181,14 @@ def main():
                     # remove noise
                     # fixed = fixed - noise
                     prev_flow = agg_flows[-1]
+                    multi = 2
                     w = warped_
-                    for i in range(2):
+                    for i in range(multi):
                         w, flows, agg_flows, affine_params = model(fixed, w[-1], return_affine=True)
                         prev_flow = model.composite_flow(prev_flow, agg_flows[-1])
                     warped_ = w
                     agg_flows[-1] = prev_flow
-                    print('using multiple flow')
+                    print('using {}-times flow'.format(multi+1))
                 # do we need rev flow any more?
                 # , return_neg=args.reverse)
                 warped = [model.reconstruction(moving, agg_flows[-1].float())]
@@ -328,7 +329,7 @@ def main():
             jacs = jacobian_det(agg_flows[-1], return_det=True)[:,None]
             jacs = F.interpolate(jacs, size=fixed.shape[-3:], mode='trilinear', align_corners=True)
             for i in range(len(fixed)):
-                if 'ts_3-1' not in id1[i]: continue
+                if 'ts_3-' not in id1[i]: continue
                 # seg_thres = 1.2 if not ('normal' in args.checkpoint) else 1.8
                 seg_thres = 1.5
                 print('using seg_thres: {}'.format(seg_thres))
@@ -358,16 +359,16 @@ def main():
                     tum = seg_w>seg_thres
                     tum = tum.cpu()
 
-                    # f_tum = seg_m>seg_thres
-                    # f_tum = f_tum.cpu()
-                    # f_tum = find_boundaries(f_tum.numpy(), mode='outer', connectivity=1)
-                    # f_tum = torch.from_numpy(f_tum).bool()
+                    f_tum = seg_m>seg_thres
+                    f_tum = f_tum.cpu()
+                    f_tum = find_boundaries(f_tum.numpy(), mode='outer', connectivity=1)
+                    f_tum = torch.from_numpy(f_tum).bool()
 
                     lb = torch.stack([bnd, gt_bnd])
                     bnd_img = draw_seg_on_vol(im, lb, inter_dst=5, alpha=1, colors=['green','red'])*255
                     bnd_img = bnd_img.to(dtype=torch.uint8)
                     for d in range(len(bnd_img)):
-                        # bnd_img[d] = draw_segmentation_masks(bnd_img[d], f_tum[::5][d], colors='red', alpha=0.5)
+                        bnd_img[d] = draw_segmentation_masks(bnd_img[d], f_tum[::5][d], colors='red', alpha=0.5)
                         bnd_img[d] = draw_segmentation_masks(bnd_img[d], tum[::5][d], colors='yellow', alpha=0.5)
 
                     bnd_img = bnd_img/255
