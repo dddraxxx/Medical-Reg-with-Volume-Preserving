@@ -125,7 +125,7 @@ class RecursiveCascadeNetwork(nn.Module):
             stem_results.append(self.reconstruction(moving, flow))
             aflow = flow
             flows.append(flow)
-            # agg_flows.append(flow)
+            agg_flows.append(flow)
         else:
             flow = self.stems[0](fixed, moving, return_neg=return_neg)
             stem_results.append(self.reconstruction(moving, flow))
@@ -155,12 +155,13 @@ class RecursiveCascadeNetwork(nn.Module):
             else:
                 # agg_flow = self.reconstruction(agg_flows[-1], flow) + flow
                 agg_flow = self.reconstruction(aflow, flow) + flow
-            # agg_flows.append(agg_flow)
+            agg_flows.append(agg_flow)
             # stem_results.append(self.reconstruction(moving, agg_flow))
             stem_results[-1] = self.reconstruction(moving, agg_flow)
             aflow = agg_flow
         ## to keep format as previous [results, flows, agg_flows] and also reduce memory usage
-        returns = [stem_results, flows, [aflow]]
+        # returns = [stem_results, flows, [aflow]]
+        returns = [stem_results, flows, agg_flows]
         if return_neg:
             returns.append([neg_flow])
         if return_affine:

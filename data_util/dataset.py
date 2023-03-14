@@ -173,8 +173,8 @@ class Data(Dataset):
         ret['voxel2'] = d2['volume'][...]
         ret['segmentation1'] = np.zeros_like(ret['voxel1'])
         ret['segmentation2'] = np.zeros_like(ret['voxel2'])
-        ret['point1'] = np.ones((6,3))*(-1)
-        ret['point2'] = np.ones((6,3))*(-1)
+        ret['point1'] = np.ones((5,3))*(-1)
+        ret['point2'] = np.ones((5,3))*(-1)
         if 'segmentation' in d1:
             ret['segmentation1'] = d1['segmentation'][...]
         if 'segmentation' in d2:

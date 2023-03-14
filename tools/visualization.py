@@ -64,7 +64,7 @@ def plot_grid(ax, flow, factor=10):
 def plt_close():
     plt.close()
 
-def plot_landmarks(img, landmarks, fig=None, ax=None, save_path=None, every_n = 3, color='red',size=10):
+def plot_landmarks(img, landmarks, fig=None, ax=None, save_path=None, every_n = 3, color='red',size=10, proj_landmarks=None, proj_color='green', save_each=False):
     """
     Plot landmarks on the input image.
 
@@ -90,6 +90,14 @@ def plot_landmarks(img, landmarks, fig=None, ax=None, save_path=None, every_n = 
     if ax is None:
         axes = fig.subplots(len(landmarks), 5)
     else: axes = ax
+
+    if proj_landmarks is not None:
+        if isinstance(proj_landmarks, torch.Tensor):
+            proj_landmarks = proj_landmarks.cpu().numpy()
+        for i in range(landmarks.shape[0]):
+            axes[i,2].scatter(proj_landmarks[i, 2], proj_landmarks[i, 1], s=size, c=proj_color, marker='x')
+            # axes[i,4].scatter(proj_landmarks[i, 2], proj_landmarks[i, 0], s=size, c=proj_color, marker='x')
+
     # calculate idx to be visualized
     for i in range(landmarks.shape[0]):
         x0 = landmarks[i, 0]
@@ -112,6 +120,16 @@ def plot_landmarks(img, landmarks, fig=None, ax=None, save_path=None, every_n = 
         ax.axis('off')
     if save_path is not None:
         plt.savefig(save_path)
+    if save_each:
+        from pathlib import Path as pa
+        save_dir = pa(save_path).parent / pa(save_path).stem
+        save_dir.mkdir(exist_ok=True)
+        for i in range(landmarks.shape[0]):
+            # save img in the middle
+            # Save just the portion _inside_ the second axis's boundaries
+            extent = axes[i,2].get_window_extent().transformed(fig.dpi_scale_trans.inverted())
+            fig.savefig(save_dir / f'{i}.png', dpi=300,
+                        bbox_inches=extent)
     return fig, axes
 
 def plot_to_PIL():
@@ -232,14 +250,97 @@ def hsl2rgb_torch(hsl: torch.Tensor) -> torch.Tensor:
 
 #%%
 import matplotlib.pyplot as plt
+# import seaborn as sns
 import torch
+import numpy as np
 
 dice_x = [0.01, 0.05, 0.1, 0.15, 0.2, 1]
-stsr_y = [1.39, 1.35, 1.19, 1.13, 1.13,1.08]
+stsr_y = [1.39**2, 1.19**2, 1.15**2, 1.13**2, 1.13**2, 1.205]
 
-ours = (0.17, 1.1**2) # triangle
-whole = (0.05, 1.3**2) # x
+ours = (0.17, 1.26) # triangle
+whole = (0.05, 1.64) # x
 
-liver_dice_y = [0.9060, 0.9098, 0.9078, 0.9066, 0.9120, 0.9101]
-ours_dice = (0.17, 0.908)
-whole_dice = (0.05, 0.903)
+# liver_dice_y = [0.8960, 0.9041, 0.9078, 0.9066, 0.9120, 0.911]
+# ours_dice = (0.17, 0.908)
+# whole_dice = (0.05, 0.903)
+plt.figure(figsize=(6,4))
+plt.grid(linestyle='--', linewidth=0.5, alpha=0.5)
+ax = plt.gca()
+# ticks with 0.05 interval, but show labels with 0.1 interval
+plt.xticks(np.arange(0, 1.1, 0.05), [i if i%0.1==0 else ''
+                                     for i in np.arange(0, 1.1, 0.05)])
+
+import matplotlib.ticker as ticker
+
+# enlarge size of words
+
+plt.xlabel('Dice Score of Tumor Mask', fontsize=15)
+plt.ylabel('Test STSR', fontsize=15)
+
+plt.plot(dice_x, stsr_y, color='r', marker='s', markevery=1, mew=0.25, linewidth=2)
+legends = ['Noisy GT']
+# for i_x, i_y in zip(dice_x, stsr_y):
+#     if i_x>=0.15 and i_x<=0.2: continue
+#     plt.text(i_x, i_y, '({}, {:.1f})'.format(i_x, i_y))
+for i_x, i_y in [ours,]:
+    plt.text(i_x-0.05, i_y-0.05, '({}, {:.1f})'.format(i_x, i_y))
+for i_x, i_y in [whole,]:
+    plt.text(i_x+0.01, i_y-0.01, '({}, {:.1f})'.format(i_x, i_y))
+
+
+# show the coordinate
+plt.scatter(ours[0], ours[1], marker='D', )
+legends += ['Volume Preserving for Tumor']
+plt.scatter(whole[0], whole[1], marker='x')
+legends += ['Volume Preserving for Organ']
+# plt.plot(dice_x, liver_dice_y, color='b', marker='o', markevery=1, mew=0.25, linewidth=2)
+
+# Format the x-tick labels to show every other tick with 0.1 using FormatStrFormatter
+# ax.xaxis.set_major_formatter(ticker.FormatStrFormatter('%0.1f'))
+
+plt.legend(legends, fontsize=15, loc='upper right')
+plt.tight_layout()
+plt.savefig("fig6.pdf")
+
+# plt.show()
+
+#%%
+# Import Library
+
+import numpy as np 
+import matplotlib.pyplot as plt 
+  
+# Define Data
+
+x = np.arange(0, 15, 0.2)
+data_1 = np.tan(x)
+data_2 = np.exp(x) 
+  
+# Create Plot
+
+fig, ax1 = plt.subplots() 
+  
+ax1.set_xlabel('X-axis') 
+ax1.set_ylabel('Y1-axis', color = 'black') 
+plot_1 = ax1.plot(x, data_1, color = 'black') 
+ax1.tick_params(axis ='y', labelcolor = 'black') 
+
+# Adding Twin Axes
+
+ax2 = ax1.twinx() 
+  
+ax2.set_ylabel('Y2-axis', color = 'green') 
+plot_2 = ax2.plot(x, data_2, color = 'green') 
+ax2.tick_params(axis ='y', labelcolor = 'green') 
+
+# Set same axes sacles
+
+a,b = -200, 200
+ax1.set_ylim(a,b)
+ax2.set_ylim(a,b)
+
+# Show plot
+
+plt.show()
+
+#%% write metrics plot

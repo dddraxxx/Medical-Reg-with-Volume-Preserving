@@ -373,6 +373,7 @@ def li2h5():
 
     dct = li_val_transforms({"image": t1, "label": t1_seg})
     dt1 = dct['image']
+    dt1_seg = dct['label']
     print(dt1.shape, )
     show_img(t1, inter_dst=5).save('{}{}_img_128h5.png'.format(img_dir, data_name.name[:-7]))
     # combo_imgs(dt1, dt1_seg, axis=0, idst=5).save('/home/hynx/regis/zdongzhong/images/liver/{}_combo.png'.format(data_name.name[:-7]))
