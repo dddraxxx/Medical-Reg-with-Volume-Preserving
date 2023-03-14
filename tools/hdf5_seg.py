@@ -456,10 +456,12 @@ def store_dicom_h5(h5_path, path = '/mnt/sdc/qhd/nbia/Duke-Breast-Cancer-MRI'):
 
 if __name__=='__main__':
     # store_segs('/home/hynx/regis/Recursive-Cascaded-Networks/datasets/lits.h5')#, selected=np.s_[128:129])
-    # store_segs_mrbr('/home/hynx/regis/recursive-cascaded-networks/datasets/mrbr.h5')
+    # # store_segs_mrbr('/home/hynx/regis/recursive-cascaded-networks/datasets/mrbr.h5')
     # store_segs_mrbr('/home/hynx/regis/recursive-cascaded-networks/datasets/brats_t1ce.h5')
-    # visual_h5('/home/hynx/regis/recursive-cascaded-networks/datasets/brain_test_23.h5')
-    visual_h5('/home/hynx/regis/recursive-cascaded-networks/datasets/liver_test10.h5')
+    # # visual_h5('./datasets/brain_test_23.h5')
+    visual_h5('./datasets/liver_test10.h5')
+    visual_h5('./datasets/brain_test10_23.h5')
+
     # visual_h5('/home/hynx/regis/Recursive-Cascaded-Networks/datasets/lits.h5')
     # visual_h5('/home/hynx/regis/Recursive-Cascaded-Networks/datasets/lspig_val.h5')
     # visual_h5('/home/hynx/regis/Recursive-Cascaded-Networks/datasets/lits_paste.h5')

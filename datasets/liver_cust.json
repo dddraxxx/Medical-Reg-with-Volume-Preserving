@@ -48,7 +48,7 @@
   },
   "image_type": "liver",
   "lmk":{
-    "lmk-val":"/home/hynx/regis/recursive-cascaded-networks/datasets/lits17_landmark.json"
+    "lmk-val":"./datasets/lits17_landmark.json"
   },
   "schemes": {
     "1": {
