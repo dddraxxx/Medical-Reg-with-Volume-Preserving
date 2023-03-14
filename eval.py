@@ -120,8 +120,6 @@ def main():
                 data[k] = [i for l,i in zip(idx, data[k]) if l]
             else: data[k] = data[k][idx,...]
         return data
-    if args.lmd:
-        jsn = json.load(open(args.lmk_json, 'r'))
     for iteration, data in tqdm(enumerate(val_loader)):
         seg1, seg2 = data['segmentation1'], data['segmentation2']
         if args.test_large:
@@ -203,18 +201,25 @@ def main():
             results['agg_flows'].extend(magg_flows)
             results['affine_params'].extend(affine_params['theta'].detach().cpu())
         # metrics: landmark
+        # if args.lmd:
+        #     jsn = json.load(open(args.lmk_json, 'r'))
         if args.lmd:
-            for ix, ag_flow in enumerate(agg_flows):
+            selected = [(data['point1'][i]!=-1).all() for i in range(data['point1'].shape[0])
+            flow = agg_flows[-1][selected]
+            selected_aggflows = [agg_flows[i][selected] for i in range(len(agg_flows))]
+            for ix, ag_flow in enumerate(selected_aggflows):
                 # ag_flow = agg_flows[0].new_zeros(agg_flows[0].shape)
                 slc = np.s_[:]
-                if 'point1' in data and not (data['point1']==-1).any():
-                    lmk1 = data['point1'].squeeze().cuda()
-                else:
-                    lmk1 : torch.Tensor = ag_flow.new_tensor([jsn[i.split('_')[-1].replace('lits','')][slc] for i in id1]) # n, m, 3
-                if 'point2' in data and not (data['point2']==-1).any():
-                    lmk2 = data['point2'].squeeze().cuda() 
-                else:
-                    lmk2 = ag_flow.new_tensor([jsn[i.split('_')[-1]][slc] for i in id2]) # n, m, 3
+                lmk1, lmk2 = data['point1'].squeeze(1).cuda(), data['point2'].squeeze(1).cuda()
+                # if 'point1' in data and not (data['point1']==-1).any():
+                #     lmk1 = data['point1'].squeeze().cuda()
+                # else:
+                # #     lmk1 : torch.Tensor = ag_flow.new_tensor([jsn[i.split('_')[-1].replace('lits','')][slc] for i in id1]) # n, m, 3
+                # if 'point2' in data and not (data['point2']==-1).any():
+                #     lmk2 = data['point2'].squeeze().cuda() 
+                # else:
+                # #     lmk2 = ag_flow.new_tensor([jsn[i.split('_')[-1]][slc] for i in id2]) # n, m, 3
+                print('calculating landmark distance for {} and {}'.format(id1[ix], id2[ix]))
                 # exclude landmarks that is close to tumor
                 lmk1_w = lmk1 + torch.stack([torch.stack([ag_flow[j, :][([0,1,2],*lmk1[j,i].long())] \
                     for i in range(lmk1.size(1))]) \
@@ -249,15 +254,14 @@ def main():
                 # visualize landmarks
             if args.visual_lmk:
                 from tools.utils import get_nearest
-                flow = agg_flows[-1].squeeze()
                 points = torch.meshgrid([torch.arange(flow.shape[2]), torch.arange(flow.shape[3]), torch.arange(flow.shape[4])], indexing='ij')
                 points = torch.stack(points).to(flow.device)
                 flowed_points = points + flow
                 flowed_points = flowed_points.permute(0,2,3,4,1).reshape(args.batch_size,-1,3)
                 flow = flow.permute(0,2,3,4,1).reshape(args.batch_size,-1,3)
-                flow_lmk2 = get_nearest(flowed_points, lmk2, k=1, picked_points=flow).squeeze().round().long()
+                flow_lmk2 = get_nearest(flowed_points, lmk2, k=1, picked_points=flow).squeeze(1).round().long()
                 lmk2_w = lmk2 - flow_lmk2
-                for ix in range(len(id1)):
+                for ix in range(len(flow)):
                     from tools.visualization import plot_landmarks
                     if not os.path.exists(f'./images/landmarks/{id1[ix]}_fixed.png'):
                         fig, axes = plot_landmarks(fixed[ix,0], lmk1[ix], save_path=f'./images/landmarks/{id1[ix]}_fixed.png')
@@ -318,7 +322,7 @@ def main():
         elif args.only_vis_target:
             continue
         # visualize figures
-        if True and not args.use_ants:
+        if False and not args.use_ants:
             dir = './figures/fig1/brain/{}/'.format(cfg_training.base_network)
             # print(args.checkpoint)
             model_name = args.checkpoint.split('/')[-1].split('_')[3]
@@ -329,7 +333,7 @@ def main():
             jacs = jacobian_det(agg_flows[-1], return_det=True)[:,None]
             jacs = F.interpolate(jacs, size=fixed.shape[-3:], mode='trilinear', align_corners=True)
             for i in range(len(fixed)):
-                if 'ts_3-' not in id1[i]: continue
+                if 'ts_3-1' not in id1[i]: continue
                 # seg_thres = 1.2 if not ('normal' in args.checkpoint) else 1.8
                 seg_thres = 1.5
                 print('using seg_thres: {}'.format(seg_thres))
@@ -368,7 +372,7 @@ def main():
                     bnd_img = draw_seg_on_vol(im, lb, inter_dst=5, alpha=1, colors=['green','red'])*255
                     bnd_img = bnd_img.to(dtype=torch.uint8)
                     for d in range(len(bnd_img)):
-                        bnd_img[d] = draw_segmentation_masks(bnd_img[d], f_tum[::5][d], colors='red', alpha=0.5)
+                        # bnd_img[d] = draw_segmentation_masks(bnd_img[d], f_tum[::5][d], colors='red', alpha=0.5)
                         bnd_img[d] = draw_segmentation_masks(bnd_img[d], tum[::5][d], colors='yellow', alpha=0.5)
 
                     bnd_img = bnd_img/255
