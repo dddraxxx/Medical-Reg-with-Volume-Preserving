@@ -173,16 +173,18 @@ class Data(Dataset):
         ret['voxel2'] = d2['volume'][...]
         ret['segmentation1'] = np.zeros_like(ret['voxel1'])
         ret['segmentation2'] = np.zeros_like(ret['voxel2'])
-        ret['point1'] = np.ones((5,3))*(-1)
-        ret['point2'] = np.ones((5,3))*(-1)
+        ret['point1'] = np.ones((6,3))*(-1)
+        ret['point2'] = np.ones((6,3))*(-1)
         if 'segmentation' in d1:
             ret['segmentation1'] = d1['segmentation'][...]
         if 'segmentation' in d2:
             ret['segmentation2'] = d2['segmentation'][...]
         if 'point' in d1:
-            ret['point1'] = d1['point'][...]
+            p1 = d1['point'][...]
+            ret['point1'][:p1.shape[0],:] = p1
         if 'point' in d2:
-            ret['point2'] = d2['point'][...]
+            p2 = d2['point'][...]
+            ret['point2'][:p2.shape[0],:] = p2
         # ret be np float
         for k in ['voxel1', 'voxel2', 'segmentation1', 'segmentation2', 'point1', 'point2']:
             ret[k] = ret[k][None].astype(np.float32)

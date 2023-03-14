@@ -205,12 +205,17 @@ def main():
         #     jsn = json.load(open(args.lmk_json, 'r'))
         if args.lmd:
             selected = [i for i in range(data['point1'].shape[0]) if (data['point1'][i]!=-1).all()]
-            print(id1, id2, selected)
             if not any(selected): continue
 
             flow = agg_flows[-1][selected]
             selected_aggflows = [agg_flows[i][selected] for i in range(len(agg_flows))]
             lmk1, lmk2 = data['point1'][selected].squeeze(1).cuda(), data['point2'][selected].squeeze(1).cuda()
+
+            selected_lmkids = ((lmk1>0).all(dim=-1) & (lmk2>0).all(dim=-1)).nonzero()[:,1]
+            print(id1, id2, selected, selected_lmkids)
+            lmk1 = lmk1[:, selected_lmkids]
+            lmk2 = lmk2[:, selected_lmkids]
+
             s_id1, s_id2 = [id1[i] for i in range(len(id1)) if i in selected], [id2[i] for i in range(len(id2)) if i in selected]
             f, w, m = fixed[selected], warped[-1][selected], moving[selected]
 
@@ -261,6 +266,8 @@ def main():
 
                 # visualize landmarks
             if args.visual_lmk:
+                save_dir = './images/landmarks/{}'.format(cfg_training.data_type)
+                pa(save_dir).mkdir(exist_ok=True)
                 from tools.utils import get_nearest
                 points = torch.meshgrid([torch.arange(flow.shape[2]), torch.arange(flow.shape[3]), torch.arange(flow.shape[4])], indexing='ij')
                 points = torch.stack(points).to(flow.device)
@@ -272,10 +279,10 @@ def main():
                 for ix in range(len(flow)):
                     from tools.visualization import plot_landmarks
                     # if not os.path.exists(f'./images/landmarks/{id1[ix]}_fixed.png'):
-                    fig, axes = plot_landmarks(f[ix,0], lmk1[ix], save_path=f'./images/landmarks/{s_id1[ix]}_fixed.png', save_each=True, color='yellow')
-                    plot_landmarks(m[ix, 0], lmk2[ix], save_path=f'./images/landmarks/{s_id2[ix]}_moving.png', save_each=True, color='red')
+                    fig, axes = plot_landmarks(f[ix,0], lmk1[ix], save_path=f'{save_dir}/{s_id1[ix]}_fixed.png', save_each=True, color='yellow')
+                    plot_landmarks(m[ix, 0], lmk2[ix], save_path=f'{save_dir}/{s_id2[ix]}_moving.png', save_each=True, color='red')
                     # find the dir that is direct child of logs
-                    moving_dir = './images/landmarks/{}'.format(exp_name)
+                    moving_dir = '{}/{}'.format(str(save_dir), exp_name)
                     # mkdir
                     if not os.path.exists(moving_dir):
                         os.mkdir(moving_dir)
