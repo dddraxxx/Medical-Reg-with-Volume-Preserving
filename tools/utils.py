@@ -369,3 +369,21 @@ class OnPlt:
         if exc_type is not None:
             print(f'An exception of type {exc_type} occurred with value {exc_value}.')
         return False
+    
+import frnn
+def get_nearest(ref, points, k, picked_points):
+    """
+    Find the k nearest picked points for each reference point in 'ref' using the set of points in 'points'.
+
+    Parameters:
+        ref (numpy.ndarray): A 3D numpy array of shape (N, L1, D) representing the reference points.
+        points (numpy.ndarray): A 3D numpy array of shape (N, L2, D) representing the set of points to search in.
+        k (int): The number of nearest picked points to find for each reference point.
+        picked_points (numpy.ndarray): A 2D numpy array of shape (N, L2, D) representing the picked points to gather for.
+
+    Returns:
+        nearest_points (numpy.ndarray): A 3D numpy array of shape (N, k, D) representing the k nearest picked points for each reference point.
+    """
+    dists, idxs, nn, grid = frnn.frnn_grid_points(points, ref, K=k, r=20, return_nn=False)
+    nearest_points = frnn.frnn_gather(picked_points, idxs, k)
+    return nearest_points

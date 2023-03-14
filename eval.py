@@ -39,7 +39,7 @@ parser.add_argument('-lm', '--lmd', action='store_true', help='If test landmark 
 parser.add_argument('--lmk_json', type=str, default='./landmark_json/lits17_landmark.json', help='landmark for eval files')
 # parser.add_argument('-m', '--masked', action='store_true', help='If model need masks')
 parser.add_argument('-lm_r', '--lmk_radius', type=int, default=10, help='affected landmark within radius')
-parser.add_argument('-vl', '--visual_lmk', action='store_true', help='If visualize landmark')
+parser.add_argument('-vl', '--visual_lmk', action='store_false', help='If visualize landmark')
 parser.add_argument('-rd', '--region_dice', default=True, type=lambda x: x.lower() in ['true', '1', 't', 'y', 'yes'], help='If calculate dice for each region')
 parser.add_argument('-sd', '--surf_dist', default=False, type=lambda x: x.lower() in ['true', '1', 't', 'y', 'yes'], help='If calculate dist for each surface')
 parser.add_argument('-only_vis', '--only_vis_target', action='store_true', help='If only visualize target')
@@ -204,13 +204,19 @@ def main():
         # if args.lmd:
         #     jsn = json.load(open(args.lmk_json, 'r'))
         if args.lmd:
-            selected = [(data['point1'][i]!=-1).all() for i in range(data['point1'].shape[0])
+            selected = [i for i in range(data['point1'].shape[0]) if (data['point1'][i]!=-1).all()]
+            print(id1, id2, selected)
+            if not any(selected): continue
+
             flow = agg_flows[-1][selected]
             selected_aggflows = [agg_flows[i][selected] for i in range(len(agg_flows))]
+            lmk1, lmk2 = data['point1'][selected].squeeze(1).cuda(), data['point2'][selected].squeeze(1).cuda()
+            s_id1, s_id2 = [id1[i] for i in range(len(id1)) if i in selected], [id2[i] for i in range(len(id2)) if i in selected]
+            f, w, m = fixed[selected], warped[-1][selected], moving[selected]
+
             for ix, ag_flow in enumerate(selected_aggflows):
                 # ag_flow = agg_flows[0].new_zeros(agg_flows[0].shape)
                 slc = np.s_[:]
-                lmk1, lmk2 = data['point1'].squeeze(1).cuda(), data['point2'].squeeze(1).cuda()
                 # if 'point1' in data and not (data['point1']==-1).any():
                 #     lmk1 = data['point1'].squeeze().cuda()
                 # else:
@@ -219,7 +225,7 @@ def main():
                 #     lmk2 = data['point2'].squeeze().cuda() 
                 # else:
                 # #     lmk2 = ag_flow.new_tensor([jsn[i.split('_')[-1]][slc] for i in id2]) # n, m, 3
-                print('calculating landmark distance for {} and {}'.format(id1[ix], id2[ix]))
+                print('calculating landmark distance for {} and {} in ag_flow stage {}'.format(s_id1, s_id2, ix))
                 # exclude landmarks that is close to tumor
                 lmk1_w = lmk1 + torch.stack([torch.stack([ag_flow[j, :][([0,1,2],*lmk1[j,i].long())] \
                     for i in range(lmk1.size(1))]) \
@@ -240,16 +246,18 @@ def main():
                     l2_z_coordinate = lmk2.long()[:, :, None, 2] + points[:,2]
                     l2_batch_coordinate = torch.arange(lmk2.shape[0])[:, None, None] # n, 1, 1
                     seg2_lmk_neighbor = seg2_tumor[:,0][l2_batch_coordinate, l2_x_coordinate, l2_y_coordinate, l2_z_coordinate] # n,m,10*10*10
-                    selected = (seg2_lmk_neighbor.sum(dim=-1)==0) # n,m
+                    se = (seg2_lmk_neighbor.sum(dim=-1)==0) # n,m
                     # show selected
-                    # print('landmark selected: {}'.format(selected.sum(-1).tolist()))
-                    lmk_err = ((lmk2 - lmk1_w).norm(dim=-1)*selected).sum(-1)/selected.sum(-1) # n,m
+                    # print('landmark se: {}'.format(se.sum(-1).tolist()))
+                    lmk_err = ((lmk2 - lmk1_w).norm(dim=-1)*se).sum(-1)/se.sum(-1) # n,m
                 else:
                     lmk_err = (lmk2 - lmk1_w).norm(dim=-1).mean(-1)
                 if f'{ix}_lmk_err' not in metric_keys:
                     metric_keys.append(f'{ix}_lmk_err')
                     results[f'{ix}_lmk_err'] = []
-                results[f'{ix}_lmk_err'].extend(lmk_err.cpu().numpy())
+                all_lmk_err = torch.zeros(args.batch_size).cuda()
+                all_lmk_err[selected] = lmk_err
+                results[f'{ix}_lmk_err'].extend(all_lmk_err.cpu().numpy())
 
                 # visualize landmarks
             if args.visual_lmk:
@@ -257,14 +265,15 @@ def main():
                 points = torch.meshgrid([torch.arange(flow.shape[2]), torch.arange(flow.shape[3]), torch.arange(flow.shape[4])], indexing='ij')
                 points = torch.stack(points).to(flow.device)
                 flowed_points = points + flow
-                flowed_points = flowed_points.permute(0,2,3,4,1).reshape(args.batch_size,-1,3)
-                flow = flow.permute(0,2,3,4,1).reshape(args.batch_size,-1,3)
-                flow_lmk2 = get_nearest(flowed_points, lmk2, k=1, picked_points=flow).squeeze(1).round().long()
+                flowed_points = flowed_points.permute(0,2,3,4,1).reshape(len(selected),-1,3)
+                flow = flow.permute(0,2,3,4,1).reshape(len(selected),-1,3)
+                flow_lmk2 = get_nearest(flowed_points, lmk2, k=1, picked_points=flow).squeeze(-2).round().long()
                 lmk2_w = lmk2 - flow_lmk2
                 for ix in range(len(flow)):
                     from tools.visualization import plot_landmarks
-                    if not os.path.exists(f'./images/landmarks/{id1[ix]}_fixed.png'):
-                        fig, axes = plot_landmarks(fixed[ix,0], lmk1[ix], save_path=f'./images/landmarks/{id1[ix]}_fixed.png')
+                    # if not os.path.exists(f'./images/landmarks/{id1[ix]}_fixed.png'):
+                    fig, axes = plot_landmarks(f[ix,0], lmk1[ix], save_path=f'./images/landmarks/{s_id1[ix]}_fixed.png', save_each=True, color='yellow')
+                    plot_landmarks(m[ix, 0], lmk2[ix], save_path=f'./images/landmarks/{s_id2[ix]}_moving.png', save_each=True, color='red')
                     # find the dir that is direct child of logs
                     moving_dir = './images/landmarks/{}'.format(exp_name)
                     # mkdir
@@ -272,13 +281,15 @@ def main():
                         os.mkdir(moving_dir)
                     # plot_landmarks(fixed[ix,0], lmk1_w[ix], fig=fig, ax=axes, color='yellow', save_path=f'{moving_dir}/{id1[ix]}_{id2[ix]}_fiexd.png')
                     # plot_landmarks(moving[ix,0], lmk2[ix], save_path=f'{moving_dir}/{id1[ix]}_{id2[ix]}_moving.png')
-                    plot_landmarks(warped[-1][ix,0], lmk1[ix], save_path=f'{moving_dir}/{id1[ix]}_{id2[ix]}_warped_lmk1.png', size=20, color='red')
-                    fig, _ = plot_landmarks(warped[-1][ix,0], lmk2_w[ix], save_path=f'{moving_dir}/{id1[ix]}_{id2[ix]}_warped.png', size=20)
-                    if "selected" in locals():
+                    plot_landmarks(w[ix,0], lmk1[ix], save_path=f'{moving_dir}/{s_id1[ix]}_{s_id2[ix]}_warped_lmk1.png', size=20, color='red')
+                    fig, _ = plot_landmarks(w[ix,0], lmk2_w[ix], save_path=f'{moving_dir}/{s_id1[ix]}_{s_id2[ix]}_warped.png', size=20, color='red',
+                                            proj_landmarks=lmk1[ix], proj_color='yellow', save_each=True)
+                    if "se" in locals():
                         # add title for fig
-                        fig.suptitle(f'{selected.nonzero().squeeze().tolist()}')
+                        fig.suptitle(f'{se.nonzero().squeeze().tolist()}')
                     # close all figs of plt
                     plt.close('all')
+                    print("saving landmarks to {}".format(moving_dir))
 
         ### Debug use
         pairs = list(zip(id1, id2))
