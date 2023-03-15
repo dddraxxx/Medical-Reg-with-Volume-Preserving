@@ -4,7 +4,6 @@ from tools.flow_display import flow_to_image
 import time
 from pathlib import Path as pa
 import argparse
-from genericpath import isfile
 import os
 import pickle
 import json
@@ -204,7 +203,7 @@ def main():
         # if args.lmd:
         #     jsn = json.load(open(args.lmk_json, 'r'))
         if args.lmd:
-            selected = [i for i in range(data['point1'].shape[0]) if (data['point1'][i]!=-1).all()]
+            selected = [i for i in range(data['point1'].shape[0]) if (data['point1'][i]!=-1).any()]
             if not any(selected): continue
 
             flow = agg_flows[-1][selected]
@@ -267,7 +266,7 @@ def main():
                 # visualize landmarks
             if args.visual_lmk:
                 save_dir = './images/landmarks/{}'.format(cfg_training.data_type)
-                pa(save_dir).mkdir(exist_ok=True)
+                pa(save_dir).mkdir(exist_ok=True, parents=True)
                 from tools.utils import get_nearest
                 points = torch.meshgrid([torch.arange(flow.shape[2]), torch.arange(flow.shape[3]), torch.arange(flow.shape[4])], indexing='ij')
                 points = torch.stack(points).to(flow.device)

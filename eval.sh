@@ -62,6 +62,7 @@ msk_weight=/home/hynx/regis/recursive-cascaded-networks/logs/liver/VTN/1/Mar04-1
 # msk_weight=/home/hynx/regis/recursive-cascaded-networks/logs/liver/VTN/1/Mar07-063207_li1_VTNx3_random-seg0.2_seg_vp0.1sttumor
 # msk_weight=/home/hynx/regis/recursive-cascaded-networks/logs/liver/VTN/1/Mar07-041346_li1_VTNx3_random-seg0.01_seg_vp0.1sttumor
 # /home/hynx/regis/recursive-cascaded-networks/logs/liver/VTN/1/Mar04-004325_li1_VTNx3_seg_seg_
+/home/hynx/regis/recursive-cascaded-networks/logs/liver/VTN/1/Mar04-233439_li1_VTNx3_unsup-organ_hard_vp0.1storgan
 
 
 # VXM
@@ -74,7 +75,6 @@ msk_weight=/home/hynx/regis/recursive-cascaded-networks/logs/liver/VXM/1/Mar08-0
 msk_weight=/workspace/qihuad/iccv23_regis/Recursive-Cascaded-Networks/logs/liver/TSM/1/Mar03-033707_li1_TSMx1_normal__
 # msk_weight=/workspace/qihuad/iccv23_regis/Recursive-Cascaded-Networks/logs/liver/TSM/1/Mar05-030624_li1_TSMx1_adaptive-u2bf_softthr1.5sigmbnd0.5st2bf_vp0.1stdynamic
 # msk_weight=/workspace/qihuad/iccv23_regis/Recursive-Cascaded-Networks/logs/liver/TSM/1/Mar06-023254_li1_TSMx1_seg_seg_vp0.1sttumor
-/home/hynx/regis/recursive-cascaded-networks/logs/liver/VTN/1/Mar04-233439_li1_VTNx3_unsup-organ_hard_vp0.1storgan
 eval_test $msk_weight $@
 
 
