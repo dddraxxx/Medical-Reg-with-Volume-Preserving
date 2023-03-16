@@ -91,12 +91,15 @@ def plot_landmarks(img, landmarks, fig=None, ax=None, save_path=None, every_n = 
         axes = fig.subplots(len(landmarks), 5)
     else: axes = ax
 
+
+    dist_lmk = None
     if proj_landmarks is not None:
         if isinstance(proj_landmarks, torch.Tensor):
             proj_landmarks = proj_landmarks.cpu().numpy()
         for i in range(landmarks.shape[0]):
             axes[i,2].scatter(proj_landmarks[i, 2], proj_landmarks[i, 1], s=size, c=proj_color, marker='x')
             # axes[i,4].scatter(proj_landmarks[i, 2], proj_landmarks[i, 0], s=size, c=proj_color, marker='x')
+        dist_lmk = np.sqrt(np.sum((landmarks[:, 1:]-proj_landmarks[:, 1:])**2, axis=1))
 
     # calculate idx to be visualized
     for i in range(landmarks.shape[0]):
@@ -109,7 +112,9 @@ def plot_landmarks(img, landmarks, fig=None, ax=None, save_path=None, every_n = 
             axes[i,1].imshow(img[int(x0)-every_n, ...], cmap='gray')
             axes[i,1].set_title(f'{int(x0)-every_n}')
             axes[i,2].imshow(img[int(x0), ...], cmap='gray')
-            axes[i,2].set_title(f'{int(x0)}, ({landmarks[i, 0]}, {landmarks[i, 1]}, {landmarks[i, 2]})')
+            if dist_lmk is not None:
+                axes[i,2].set_title(f'{int(x0)}, ({landmarks[i, 0]}, {landmarks[i, 1]}, {landmarks[i, 2]}), {dist_lmk[i]:.2f}')
+            else: axes[i,2].set_title(f'{int(x0)}, ({landmarks[i, 0]}, {landmarks[i, 1]}, {landmarks[i, 2]})')
             axes[i,3].imshow(img[int(x0)+every_n, ...], cmap='gray')
             axes[i,3].set_title(f'{int(x0)+every_n}')
             axes[i,4].imshow(img[int(x0)+2*every_n, ...], cmap='gray')
