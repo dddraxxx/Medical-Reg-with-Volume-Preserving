@@ -1,7 +1,7 @@
 *.pyc
 logs
 *.pth
-evaluations/*
+*/evaluations/*
 *_trial.py
 *.png
 *.jpg
@@ -11,3 +11,6 @@ datasets/*
 !datasets/*_cust.json
 tools/extensions/
 wandb/
+
+*.pdf
+*.tar.gz

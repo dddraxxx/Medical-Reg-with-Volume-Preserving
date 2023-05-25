@@ -124,12 +124,12 @@ def main():
 
     # Hong Kong time
     dt = datetime.datetime.now(tz=datetime.timezone(datetime.timedelta(hours=8)))
-    run_id = '_'.join([dt.strftime('%b%d-%H%M%S'), 
+    run_id = '_'.join([dt.strftime('%b%d-%H%M%S'),
                        str(data_type)[:2] + str(train_scheme) + ('pc' if args.pre_calc else ''), # what dataset to use and whether to pre-calculate the flow
                        args.base_network+'x'+str(args.n_cascades), # base network and number of cascades
-                       args.name, 
+                       args.name,
                        args.masked + (f'thr{args.mask_threshold}' + args.soft_transform+'bnd'+str(args.boundary_thickness)+'st{}'.format(1+args.use_2nd_flow) + ('bf' if args.use_bilateral and args.use_2nd_flow else '')
-                       if args.mask_threshold>0 and args.masked in ['soft', 'hard']  
+                       if args.mask_threshold>0 and args.masked in ['soft', 'hard']
                        else ''), # params for transforming jacobian
                        'vp'+str(args.vol_preserve)+'st'+args.size_type if args.vol_preserve>0 else '' # params for volume preserving loss
                        ])
@@ -192,9 +192,12 @@ def main():
             tags = run_id.split('_') + [data_type, args.base_network, str(train_scheme)]
             # rm empty tags
             tags = [t for t in tags if t]
-            wandb.init(name=name, notes=run_id, sync_tensorboard=True, config=cfg, save_code=True, dir=pa(log_dir).parent, 
+            wandb.init(name=name, notes=run_id, sync_tensorboard=True, config=cfg, save_code=True, dir=pa(log_dir).parent,
                        resume='allow' if not args.ctt else 'must', id=id_for_wandb, tags=tags)
+        # print in green the following message
+        print('\033[92m')
         writer = SummaryWriter(log_dir=log_dir)
+        print('\033[0m')
     if args.debug:
         # torch.autograd.set_detect_anomaly(True)
         pass
@@ -212,7 +215,7 @@ def main():
     total_buff = sum(b.nelement()*b.element_size() for b in model.buffers())
     size_all_mb = (total_params + total_buff)/ 1024**2
     print('model size: {:.3f}MB'.format(size_all_mb))
-    
+
     if args.masked in ['soft', 'hard']:
         if args.pre_calc:
             precompute_h5 = '/home/hynx/regis/recursive-cascaded-networks/datasets/{}_computed.h5'.format(args.base_network)
@@ -224,7 +227,7 @@ def main():
             cfg_train = ml_collections.ConfigDict(args.__dict__)
             precompute_h5 = False
             build_precompute(model, train_dataset, cfg_train)
-        
+
     if dist.is_initialized():
         model = DDP(model, device_ids=[local_rank], output_device=local_rank)
         mmodel = model.module
@@ -305,7 +308,7 @@ def main():
             # do some augmentation
             seg1 = data['segmentation1'].cuda()
             seg2 = data['segmentation2'].cuda()
-            
+
             def rand_mask_(mask):
                 tmask = mask>1.5
                 omask = mask>0.5
@@ -333,7 +336,7 @@ def main():
                     log_scalars.update(ls)
                     img_dict.update(idct)
             # settle down input_seg for the network and VP loss
-            elif args.masked=='seg': 
+            elif args.masked=='seg':
                 input_mask = seg2.float()
                 if args.mask_seg_dice>0 and args.mask_seg_dice<1:
                     input_mask = rand_mask_(input_mask)
@@ -343,14 +346,14 @@ def main():
                     # import pdb; pdb.set_trace()
                     img_dict['rand_mask'] = visualize_3d(draw_seg_on_vol(input_mask[0,0], seg2[0,0].long(), to_onehot=True, inter_dst=5), inter_dst=1).cpu()
                 input_seg = input_mask
-            
+
             ## No augment here
             # if args.augment and (not args.debug):
             #     moving, seg2 = model.augment(moving, seg2)
             if args.invert_loss:
                 fixed, moving = torch.cat([fixed, moving], dim=0), torch.cat([moving, fixed], dim=0)
                 seg1, seg2 = torch.cat([seg1, seg2], dim=0), torch.cat([seg2, seg1], dim=0)
-            
+
             if args.in_channel==3:
                 moving_ = torch.cat([moving, input_seg], dim=1)
             else:
@@ -402,7 +405,7 @@ def main():
             # 2. vp_seg_mask: the mask where the ratio is kept, used for VP loss
             if not args.masked:
                 sim = sim_loss(fixed, warped[-1])
-                mask_moving = seg2 
+                mask_moving = seg2
                 vp_seg_mask = w_seg2
             else:
                 mask_moving = input_seg
@@ -424,7 +427,7 @@ def main():
                         # import code; code.interact(local=dict(globals(), **locals()))
                         # calculate the strenght of soft contraints compared to hard constraints
                         # (warped_soft_mask>0.5).flatten(1).sum(1)/((w_seg2>1.5).flatten(1).sum(1)+1e-6)
-                        # calculate the strenght of soft contraints 
+                        # calculate the strenght of soft contraints
                         # (warped_soft_mask)[w_seg2>1.5].sum()/((w_seg2>1.5).sum()+1e-6)
                 elif args.masked =='hard':
                     with torch.no_grad():
@@ -465,9 +468,9 @@ def main():
             if args.vol_preserve>0:
                 # to decide the voxels to be preserved
                 if args.size_type=='organ':
-                    # keep the volume of the whole organ 
+                    # keep the volume of the whole organ
                     vp_tum_loc = vp_seg_mask>0.5
-                elif args.size_type=='tumor': 
+                elif args.size_type=='tumor':
                     # keep the volume of the tumor region
                     vp_tum_loc = vp_seg_mask>1.5
                 elif args.size_type=='tumor_gt':
@@ -478,12 +481,12 @@ def main():
                     # the vp_loc is a weighted mask that is calculated from the ratio of the tumor region
                     vp_tum_loc = warped_soft_mask # B, C, S, H, W
                 img_dict['vp_loc'] = visualize_3d(vp_tum_loc[0,0]).cpu()
-                img_dict['vp_loc_on_wseg2'] = visualize_3d(draw_seg_on_vol(vp_tum_loc[0,0], 
-                                                                           w_seg2[0,0].round().long(), 
+                img_dict['vp_loc_on_wseg2'] = visualize_3d(draw_seg_on_vol(vp_tum_loc[0,0],
+                                                                           w_seg2[0,0].round().long(),
                                                                            to_onehot=True, inter_dst=5), inter_dst=1).cpu()
                 bs = agg_flows[-1].shape[0]
                 # the following line uses mask_fixing and mask_moving to calculate the ratio
-                # ratio = (mask_fixing>.5).view(bs,-1).sum(1)/(mask_moving>.5).view(bs, -1).sum(1); 
+                # ratio = (mask_fixing>.5).view(bs,-1).sum(1)/(mask_moving>.5).view(bs, -1).sum(1);
                 # now I try to use the warped mask as the reference
                 ratio = (vp_seg_mask>0.5).view(bs,-1).sum(1) / (mask_moving>0.5).view(bs, -1).sum(1)
                 log_scalars['target_warped_ratio'] = ratio.mean().item()
@@ -494,7 +497,7 @@ def main():
                     # Notice!! It should be *ratio instead of /ratio
                     det_flow = (jacobian_det(agg_flows[-1], return_det=True).abs()*ratio).clamp(min=1/3, max=3)
                     vp_mask = F.interpolate(vp_tum_loc.float(), size=det_flow.shape[-3:], mode='trilinear', align_corners=False).float().squeeze() # B, S, H, W
-                    with torch.no_grad():  
+                    with torch.no_grad():
                         vp_seg = F.interpolate(w_seg2, size=det_flow.shape[-3:], mode='trilinear', align_corners=False).float().squeeze().round().long() # B, S, H, W
                         img_dict['det_flow'] = visualize_3d(det_flow[0]).cpu()
                     if args.ks_norm=='voxel':
@@ -526,7 +529,7 @@ def main():
                 k_sz = reduce_mean(k_sz)
                 loss_dict['vol_preserve_loss'] = k_sz.item()
                 loss = loss + k_sz
-            
+
             if args.invert_loss:
                 foward_flow, backward_flow = agg_flows[-1][:args.batch_size], agg_flows[-1][args.batch_size:]
                 f12, f21 = mmodel.reconstruction(backward_flow, foward_flow)+foward_flow, mmodel.reconstruction(foward_flow, backward_flow)+backward_flow
@@ -678,7 +681,7 @@ def main():
             if local_rank==0 and iteration % ckp_freq == 0:
                 if not args.debug and not os.path.exists('./ckp/model_wts/'+run_id):
                     os.makedirs('./ckp/model_wts/'+run_id)
-                
+
                 train_loss_log.append(train_epoch_loss / iteration)
                 reg_loss_log.append(train_reg_loss / iteration)
 
@@ -695,9 +698,9 @@ def main():
                 optim_state['optimizer_state_dict'] = optim.state_dict()
                 optim_state['scheduler_state_dict'] = scheduler.state_dict()
                 torch.save(optim_state, f'{ckp_dir}/optim.pth')
-            del fixed, moving, seg2, warped_, flows, agg_flows, loss, sim, reg, 
+            del fixed, moving, seg2, warped_, flows, agg_flows, loss, sim, reg,
             del loss_dict, log_scalars, data, img_dict
-            t0 = default_timer()   
+            t0 = default_timer()
         scheduler.step()
         start_iter = 0
     if args.use_wandb:

@@ -22,7 +22,7 @@ def mode_(x):
     if x.lower().startswith('rs-') or x.lower().startswith('random-seg'):
         rsv = float(x.split('-')[-1])
         globals()['rsv'] = rsv
-        return f'random-seg{rsv}'          
+        return f'random-seg{rsv}'
     elif x.lower().startswith('h-') or x.lower().startswith('hard'):
         hv = float(x.split('-')[-1])
         globals()['hv'] = hv
@@ -31,7 +31,7 @@ parser.add_argument('-m', '--mode', type=lambda x:mode_(x)
                     , default='', help='normal or seg or adaptive')
 ### Normal training or Mini Experiments
 parser.add_argument('-t', '--type', type= lambda x: {
-                        'normal': 'normal', 'mini': 'mini', 
+                        'normal': 'normal', 'mini': 'mini',
                         'n': 'normal', 'm': 'mini',
                     }[x.lower()]
                     , default='normal', help='normal or mini')
@@ -109,6 +109,8 @@ elif args.base == 'tsm':
 
 if args.debug:
     command['--debug'] = ''
+
+command['-wb'] = 0
 
 command = base_command + ' ' + ' '.join([f'{k} {v}' for k, v in command.items()])
 new_args = input('Please input extra args and press Enter to run the following command: \n' + command)
