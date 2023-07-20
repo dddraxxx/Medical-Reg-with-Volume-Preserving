@@ -73,7 +73,7 @@ parser.add_argument('-uh', '--use_seg_help', type=lambda x:x.lower() in ['true',
 parser.add_argument('-vp', '--vol_preserve', type=float, default=0, help="use volume-preserving loss")
 parser.add_argument('-st', '--size_type', choices=['organ', 'tumor', 'tumor_gt', 'constant', 'dynamic', 'reg'], default='tumor', help = 'organ means VP works on whole organ, tumor means VP works on tumor region, tumor_gt means VP works on tumor region with ground truth, constant means VP ratio is a constant, dynamic means VP has dynamic weight, reg means VP is replaced by reg loss')
 parser.add_argument('--ks_norm', default='voxel', choices=['image', 'voxel'])
-parser.add_argument('-w_ksv', '--w_ks_voxel', default=1, type=float, help='Weight for voxel method in ks loss')
+parser.add_argument('-w_ksv', '--w_ks_voxel', default=1, type=float, help='Weight for using soft mask method in ks loss')
 # network structure
 parser.add_argument('-ua', '--use_affine', type=lambda x: x.lower() in ['true', '1', 't', 'y', 'yes'], default=True, help="whether to use affine transformation")
 # log option
@@ -450,23 +450,8 @@ def main():
                 loss_dict.update({'dice_loss': dice_lo.item()})
                 loss = loss + dice_lo
 
-            # VP loss
-            # if args.vol_preserve>0 and args.size_type=='reg':
-            #     vp_tum_loc = vp_seg_mask>0.5
-            #     def reg_mask(flow, mask):
-            #         deno = mask.sum(dim=(1,2,3,4)).float()
-            #         dy = flow[:, :, 1:, :, :] - flow[:, :, :-1, :, :]
-            #         dx = flow[:, :, :, 1:, :] - flow[:, :, :, :-1, :]
-            #         dz = flow[:, :, :, :, 1:] - flow[:, :, :, :, :-1]
-            #         dy = dy * mask[:, :, 1:, :, :]
-            #         dx = dx * mask[:, :, :, 1:, :]
-            #         dz = dz * mask[:, :, :, :, 1:]
-            #         d = (dy**2).sum(dim=(1,2,3,4))/deno + (dx**2).sum(dim=(1,2,3,4))/deno + (dz**2).sum(dim=(1,2,3,4))/deno
-            #         return d.mean()/2.0 *4.0
-            #     k_sz = reg_mask(agg_flows[-1], vp_tum_loc) * args.vol_preserve
-
             if args.vol_preserve>0:
-                # to decide the voxels to be preserved
+                # get vp_tum_loc: tum_mask for vp
                 if args.size_type=='organ':
                     # keep the volume of the whole organ
                     vp_tum_loc = vp_seg_mask>0.5
@@ -480,55 +465,44 @@ def main():
                 elif args.size_type=='dynamic':
                     # the vp_loc is a weighted mask that is calculated from the ratio of the tumor region
                     vp_tum_loc = warped_soft_mask # B, C, S, H, W
+                # calculate the TSR: tumor size ratio
+                bs = agg_flows[-1].shape[0]
+                ratio = (vp_seg_mask>0.5).view(bs,-1).sum(1) / (mask_moving>0.5).view(bs, -1).sum(1)
+                ratio=ratio.view(-1,1,1,1)
+
+                # log
                 img_dict['vp_loc'] = visualize_3d(vp_tum_loc[0,0]).cpu()
                 img_dict['vp_loc_on_wseg2'] = visualize_3d(draw_seg_on_vol(vp_tum_loc[0,0],
-                                                                           w_seg2[0,0].round().long(),
-                                                                           to_onehot=True, inter_dst=5), inter_dst=1).cpu()
-                bs = agg_flows[-1].shape[0]
-                # the following line uses mask_fixing and mask_moving to calculate the ratio
-                # ratio = (mask_fixing>.5).view(bs,-1).sum(1)/(mask_moving>.5).view(bs, -1).sum(1);
-                # now I try to use the warped mask as the reference
-                ratio = (vp_seg_mask>0.5).view(bs,-1).sum(1) / (mask_moving>0.5).view(bs, -1).sum(1)
+                                                                            w_seg2[0,0].round().long(),
+                                                                            to_onehot=True, inter_dst=5), inter_dst=1).cpu()
                 log_scalars['target_warped_ratio'] = ratio.mean().item()
-                ratio=ratio.view(-1,1,1,1)
+
+                # calculate the vp loss based on change of TSR
+                ## Notice!! It should be *ratio instead of /ratio
                 k_sz = 0
-                ### single voxel ratio
-                if args.w_ks_voxel>0:
-                    # Notice!! It should be *ratio instead of /ratio
-                    det_flow = (jacobian_det(agg_flows[-1], return_det=True).abs()*ratio).clamp(min=1/3, max=3)
-                    vp_mask = F.interpolate(vp_tum_loc.float(), size=det_flow.shape[-3:], mode='trilinear', align_corners=False).float().squeeze() # B, S, H, W
-                    with torch.no_grad():
-                        vp_seg = F.interpolate(w_seg2, size=det_flow.shape[-3:], mode='trilinear', align_corners=False).float().squeeze().round().long() # B, S, H, W
-                        img_dict['det_flow'] = visualize_3d(det_flow[0]).cpu()
-                    if args.ks_norm=='voxel':
-                        adet_flow = torch.where(det_flow>1, det_flow, (1/det_flow))
-                        k_sz_voxel = (adet_flow*vp_mask).sum()/vp_mask.sum()
-                        img_dict['vp_det_flow'] = visualize_3d(adet_flow[0]).cpu()
-                        img_dict['vpdetflow_on_seg2'] = visualize_3d(draw_seg_on_vol(adet_flow[0], vp_seg[0], to_onehot=True, inter_dst=5), inter_dst=1).cpu()
-                    elif args.ks_norm=='image':
-                        # normalize loss for every image
-                        k_sz_voxel = (torch.where(det_flow>1, det_flow, 1/det_flow)*(vp_mask)).sum(dim=(-1,-2,-3))
-                        nonzero_idx = k_sz_voxel.nonzero()
-                        k_sz_voxel = k_sz_voxel[nonzero_idx]/vp_mask[:,0][nonzero_idx].sum(dim=(-1,-2,-3))
-                        k_sz_voxel = k_sz_voxel.mean()
-                    else: raise NotImplementedError
-                    k_sz = k_sz + args.w_ks_voxel*k_sz_voxel
-                    log_scalars['k_sz_voxel'] = k_sz_voxel.item()
-                ### whole volume ratio
-                if args.w_ks_voxel<1:
-                    det_flow = jacobian_det(agg_flows[-1], return_det=True).abs()
-                    vp_mask = F.interpolate(vp_tum_loc.float(), size=det_flow.shape[-3:], mode='trilinear', align_corners=False) > 0.5
-                    det_flow[~vp_mask[:,0]]=0
-                    k_sz_volume = (det_flow.sum(dim=(-1,-2,-3))/vp_mask[:,0].sum(dim=(-1,-2,-3))/ratio.squeeze()).clamp(1/3, 3)
-                    k_sz_volume = torch.where(k_sz_volume>1, k_sz_volume, 1/k_sz_volume)
-                    k_sz_volume = k_sz_volume[k_sz_volume.nonzero()].mean()
-                    k_sz = k_sz + (1-args.w_ks_voxel)*k_sz_volume
-                    log_scalars['k_sz_volume'] = k_sz_volume.item()
-                k_sz = k_sz  * args.vol_preserve
+                det_flow = (jacobian_det(agg_flows[-1], return_det=True).abs()*ratio).clamp(min=1/3, max=3)
+                vp_mask = F.interpolate(vp_tum_loc.float(), size=det_flow.shape[-3:], mode='trilinear', align_corners=False).float().squeeze() # B, S, H, W
+                ## normalize by single voxel
+                adet_flow = torch.where(det_flow>1, det_flow, (1/det_flow))
+                k_sz_voxel = (adet_flow*vp_mask).sum()/vp_mask.sum()
+                ## if normalize by each img in batch: check norm_img()
+
+                # add vp_loss to loss
+                k_sz_orig = k_sz + k_sz_voxel
+                k_sz = k_sz_orig  * args.vol_preserve
                 if torch.isnan(k_sz): k_sz = sim.new_zeros(1) # k_sz is all nan
                 k_sz = reduce_mean(k_sz)
-                loss_dict['vol_preserve_loss'] = k_sz.item()
                 loss = loss + k_sz
+
+                # log imgs
+                img_dict['vp_det_flow'] = visualize_3d(adet_flow[0]).cpu()
+                img_dict['vpdetflow_on_seg2'] = visualize_3d(draw_seg_on_vol(adet_flow[0], vp_seg[0], to_onehot=True, inter_dst=5), inter_dst=1).cpu()
+                with torch.no_grad():
+                    vp_seg = F.interpolate(w_seg2, size=det_flow.shape[-3:], mode='trilinear', align_corners=False).float().squeeze().round().long() # B, S, H, W
+                    img_dict['det_flow'] = visualize_3d(det_flow[0]).cpu()
+                # log scalars
+                log_scalars['k_sz_voxel'] = k_sz_voxel.item()
+                loss_dict['vol_preserve_loss'] = k_sz_orig.item()
 
             if args.invert_loss:
                 foward_flow, backward_flow = agg_flows[-1][:args.batch_size], agg_flows[-1][args.batch_size:]
@@ -694,7 +668,6 @@ def main():
                 ckp['global_iter'] = iteration
                 torch.save(ckp, f'{ckp_dir}/epoch_{epoch}.pth')
                 optim_state = {}
-                #TODO: add optimizer state dict
                 optim_state['optimizer_state_dict'] = optim.state_dict()
                 optim_state['scheduler_state_dict'] = scheduler.state_dict()
                 torch.save(optim_state, f'{ckp_dir}/optim.pth')
