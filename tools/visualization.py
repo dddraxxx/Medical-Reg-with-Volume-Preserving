@@ -252,100 +252,100 @@ def hsl2rgb_torch(hsl: torch.Tensor) -> torch.Tensor:
     rgb += _m
     return rgb
 
-
+if False:
 #%%
-import matplotlib.pyplot as plt
-# import seaborn as sns
-import torch
-import numpy as np
+    import matplotlib.pyplot as plt
+    # import seaborn as sns
+    import torch
+    import numpy as np
 
-dice_x = [0.01, 0.05, 0.1, 0.15, 0.2, 1]
-stsr_y = [1.39**2, 1.19**2, 1.15**2, 1.13**2, 1.13**2, 1.205]
+    dice_x = [0.01, 0.05, 0.1, 0.15, 0.2, 1]
+    stsr_y = [1.39**2, 1.19**2, 1.15**2, 1.13**2, 1.13**2, 1.205]
 
-ours = (0.17, 1.26) # triangle
-whole = (0.05, 1.64) # x
+    ours = (0.17, 1.26) # triangle
+    whole = (0.05, 1.64) # x
 
-# liver_dice_y = [0.8960, 0.9041, 0.9078, 0.9066, 0.9120, 0.911]
-# ours_dice = (0.17, 0.908)
-# whole_dice = (0.05, 0.903)
-plt.figure(figsize=(6,4))
-plt.grid(linestyle='--', linewidth=0.5, alpha=0.5)
-ax = plt.gca()
-# ticks with 0.05 interval, but show labels with 0.1 interval
-plt.xticks(np.arange(0, 1.1, 0.05), [i if i%0.1==0 else ''
-                                     for i in np.arange(0, 1.1, 0.05)])
+    # liver_dice_y = [0.8960, 0.9041, 0.9078, 0.9066, 0.9120, 0.911]
+    # ours_dice = (0.17, 0.908)
+    # whole_dice = (0.05, 0.903)
+    plt.figure(figsize=(6,4))
+    plt.grid(linestyle='--', linewidth=0.5, alpha=0.5)
+    ax = plt.gca()
+    # ticks with 0.05 interval, but show labels with 0.1 interval
+    plt.xticks(np.arange(0, 1.1, 0.05), [i if i%0.1==0 else ''
+                                        for i in np.arange(0, 1.1, 0.05)])
 
-import matplotlib.ticker as ticker
+    import matplotlib.ticker as ticker
 
-# enlarge size of words
+    # enlarge size of words
 
-plt.xlabel('Dice Score of Tumor Mask', fontsize=15)
-plt.ylabel('Test STSR', fontsize=15)
+    plt.xlabel('Dice Score of Tumor Mask', fontsize=15)
+    plt.ylabel('Test STSR', fontsize=15)
 
-plt.plot(dice_x, stsr_y, color='r', marker='s', markevery=1, mew=0.25, linewidth=2)
-legends = ['Noisy GT']
-# for i_x, i_y in zip(dice_x, stsr_y):
-#     if i_x>=0.15 and i_x<=0.2: continue
-#     plt.text(i_x, i_y, '({}, {:.1f})'.format(i_x, i_y))
-for i_x, i_y in [ours,]:
-    plt.text(i_x-0.05, i_y-0.05, '({}, {:.1f})'.format(i_x, i_y))
-for i_x, i_y in [whole,]:
-    plt.text(i_x+0.01, i_y-0.01, '({}, {:.1f})'.format(i_x, i_y))
+    plt.plot(dice_x, stsr_y, color='r', marker='s', markevery=1, mew=0.25, linewidth=2)
+    legends = ['Noisy GT']
+    # for i_x, i_y in zip(dice_x, stsr_y):
+    #     if i_x>=0.15 and i_x<=0.2: continue
+    #     plt.text(i_x, i_y, '({}, {:.1f})'.format(i_x, i_y))
+    for i_x, i_y in [ours,]:
+        plt.text(i_x-0.05, i_y-0.05, '({}, {:.1f})'.format(i_x, i_y))
+    for i_x, i_y in [whole,]:
+        plt.text(i_x+0.01, i_y-0.01, '({}, {:.1f})'.format(i_x, i_y))
 
 
-# show the coordinate
-plt.scatter(ours[0], ours[1], marker='D', )
-legends += ['Volume Preserving for Tumor']
-plt.scatter(whole[0], whole[1], marker='x')
-legends += ['Volume Preserving for Organ']
-# plt.plot(dice_x, liver_dice_y, color='b', marker='o', markevery=1, mew=0.25, linewidth=2)
+    # show the coordinate
+    plt.scatter(ours[0], ours[1], marker='D', )
+    legends += ['Volume Preserving for Tumor']
+    plt.scatter(whole[0], whole[1], marker='x')
+    legends += ['Volume Preserving for Organ']
+    # plt.plot(dice_x, liver_dice_y, color='b', marker='o', markevery=1, mew=0.25, linewidth=2)
 
-# Format the x-tick labels to show every other tick with 0.1 using FormatStrFormatter
-# ax.xaxis.set_major_formatter(ticker.FormatStrFormatter('%0.1f'))
+    # Format the x-tick labels to show every other tick with 0.1 using FormatStrFormatter
+    # ax.xaxis.set_major_formatter(ticker.FormatStrFormatter('%0.1f'))
 
-plt.legend(legends, fontsize=15, loc='upper right')
-plt.tight_layout()
-plt.savefig("fig6.pdf")
+    plt.legend(legends, fontsize=15, loc='upper right')
+    plt.tight_layout()
+    plt.savefig("fig6.pdf")
 
-# plt.show()
+    # plt.show()
 
-#%%
-# Import Library
+    #%%
+    # Import Library
 
-import numpy as np 
-import matplotlib.pyplot as plt 
-  
-# Define Data
+    import numpy as np
+    import matplotlib.pyplot as plt
 
-x = np.arange(0, 15, 0.2)
-data_1 = np.tan(x)
-data_2 = np.exp(x) 
-  
-# Create Plot
+    # Define Data
 
-fig, ax1 = plt.subplots() 
-  
-ax1.set_xlabel('X-axis') 
-ax1.set_ylabel('Y1-axis', color = 'black') 
-plot_1 = ax1.plot(x, data_1, color = 'black') 
-ax1.tick_params(axis ='y', labelcolor = 'black') 
+    x = np.arange(0, 15, 0.2)
+    data_1 = np.tan(x)
+    data_2 = np.exp(x)
 
-# Adding Twin Axes
+    # Create Plot
 
-ax2 = ax1.twinx() 
-  
-ax2.set_ylabel('Y2-axis', color = 'green') 
-plot_2 = ax2.plot(x, data_2, color = 'green') 
-ax2.tick_params(axis ='y', labelcolor = 'green') 
+    fig, ax1 = plt.subplots()
 
-# Set same axes sacles
+    ax1.set_xlabel('X-axis')
+    ax1.set_ylabel('Y1-axis', color = 'black')
+    plot_1 = ax1.plot(x, data_1, color = 'black')
+    ax1.tick_params(axis ='y', labelcolor = 'black')
 
-a,b = -200, 200
-ax1.set_ylim(a,b)
-ax2.set_ylim(a,b)
+    # Adding Twin Axes
 
-# Show plot
+    ax2 = ax1.twinx()
 
-plt.show()
+    ax2.set_ylabel('Y2-axis', color = 'green')
+    plot_2 = ax2.plot(x, data_2, color = 'green')
+    ax2.tick_params(axis ='y', labelcolor = 'green')
 
-#%% write metrics plot
+    # Set same axes sacles
+
+    a,b = -200, 200
+    ax1.set_ylim(a,b)
+    ax2.set_ylim(a,b)
+
+    # Show plot
+
+    plt.show()
+
+    #%% write metrics plot

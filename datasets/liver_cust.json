@@ -1144,11 +1144,11 @@
       ["test/5-0", "test/5-1"]
     ],
     "mini-better":[
-      ["lits/115", "lits/33"], 
+      ["lits/115", "lits/33"],
       ["yanx/14","lits/51"]
     ],
     "mini-worse":[
-      ["lits/51", "lits/33"] 
+      ["lits/51", "lits/33"]
     ],
     "mini-hard":[
       ["lits/115", "lits/33"]

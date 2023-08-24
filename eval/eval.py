@@ -85,7 +85,7 @@ def main():
     val_dataset = Data(args.dataset, scheme=args.val_subset or Split.VALID)
     val_loader = DataLoader(val_dataset, batch_size=args.batch_size, num_workers=min(8, args.batch_size), shuffle=False)
     # build framework
-    model = RecursiveCascadeNetwork(n_cascades=cfg_training.n_cascades, im_size=image_size, base_network=cfg_training.base_network, in_channels=2+bool(cfg_training.masked)).cuda()
+    model = RecursiveCascadeNetwork(n_cascades=cfg_training.n_cascades, im_size=image_size, base_network=cfg_training.base_network, in_channels=2+bool(cfg_training.masked), hyper_net=cfg_training.hyper_vp).cuda()
     # add checkpoint loading
     from tools.utils import load_model, load_model_from_dir
     if os.path.isdir(args.checkpoint):
@@ -137,7 +137,6 @@ def main():
         return data
 
 
-
     for iteration, data in tqdm(enumerate(val_loader)):
         seg1, seg2 = data['segmentation1'], data['segmentation2']
         if args.test_large:
@@ -180,12 +179,16 @@ def main():
                     org_mean = (fixed*(seg2>1.5)).sum(dim=(1,2,3,4))/(seg2>1.5).sum(dim=(1,2,3,4))
                     fixed[seg2>1.5] = (org_mean[:,None,None,None,None]+noise)[seg2>1.5]
                     show_img(fixed[0,0]).save('3.jpg')
-                warped_, flows, agg_flows, affine_params = model(fixed, moving_, return_affine=True)
-                if 'normal' in args.checkpoint and True:
+
+                warped_, flows, agg_flows, affine_params = model(fixed, moving_, return_affine=True, hyp_input=fixed.new_zeros(fixed.shape[0], 1))
+
+                warp_times = 2
+                if 'normal' in args.checkpoint and warp_times-1>0:
+                # if 'normal' in args.checkpoint or warp_times-1>0:
                     # remove noise
                     # fixed = fixed - noise
                     prev_flow = agg_flows[-1]
-                    multi = 2
+                    multi = warp_times-1
                     w = warped_
                     for i in range(multi):
                         w, flows, agg_flows, affine_params = model(fixed, w[-1], return_affine=True)
@@ -220,9 +223,12 @@ def main():
         # if args.lmd:
         #     jsn = json.load(open(args.lmk_json, 'r'))
 
-        if args.eval_visual:
+        if False and args.eval_visual:
             # visualize imgs (fixed, moving, warped)
             save_path = pa('')
+            if args.us:
+                # rename folder name: add "us" at the end of the folder name
+                save_path = save_path.parent / (save_path.name + '_us')
             cases = list(zip(id1, id2))
             cases = map(lambda x: '_'.join(x), cases)
             for case, fix_img, mov_img, war_img in zip(fixed, moving, warped, cases):
@@ -248,6 +254,7 @@ def main():
 
             s_id1, s_id2 = [id1[i] for i in range(len(id1)) if i in selected], [id2[i] for i in range(len(id2)) if i in selected]
             f, w, m = fixed[selected], warped[-1][selected], moving[selected]
+            w_lmks = []
 
             for ix, ag_flow in enumerate(selected_aggflows):
                 # ag_flow = agg_flows[0].new_zeros(agg_flows[0].shape)
@@ -265,6 +272,7 @@ def main():
                 lmk1_w = lmk1 + torch.stack([torch.stack([ag_flow[j, :][([0,1,2],*lmk1[j,i].long())] \
                     for i in range(lmk1.size(1))]) \
                         for j in range(lmk1.size(0))])
+                w_lmks.append(lmk1_w)
                 if args.lmk_radius>0:
                     seg2_tumor = seg2.cuda()>1.5
                     # pick index that is not close to tumor
@@ -293,6 +301,12 @@ def main():
                 all_lmk_err = torch.zeros(args.batch_size).cuda()
                 all_lmk_err[selected] = lmk_err
                 results[f'{ix}_lmk_err'].extend(all_lmk_err.cpu().numpy())
+
+            if args.save_pkl:
+                results.setdefault('lmk1', []).extend(lmk1.cpu().numpy())
+                results.setdefault('lmk2', []).extend(lmk2.cpu().numpy())
+                results.setdefault('lmk1_w', []).extend(torch.cat(w_lmks[-1], dim=0).cpu().numpy())
+                results.setdefault('moving', []).extend(moving.cpu().numpy())
 
             # visualize landmarks
             if args.visual_lmk:
@@ -370,8 +384,12 @@ def main():
         elif args.only_vis_target:
             continue
         # visualize figures
-        if False and not args.use_ants:
-            dir = './figures/fig1/brain/{}/'.format(cfg_training.base_network)
+        if True and not args.use_ants:
+            if 'brain' in cfg_training.dataset:
+                data_type = 'brain'
+            elif 'liver' in cfg_training.dataset:
+                data_type = 'liver'
+            dir = './lapirn_figures/fig1/{}/{}-{}times/'.format(data_type, cfg_training.base_network, warp_times-1)
             # print(args.checkpoint)
             model_name = args.checkpoint.split('/')[-1].split('_')[3]
             dir = os.path.join(dir, model_name)
@@ -381,7 +399,8 @@ def main():
             jacs = jacobian_det(agg_flows[-1], return_det=True)[:,None]
             jacs = F.interpolate(jacs, size=fixed.shape[-3:], mode='trilinear', align_corners=True)
             for i in range(len(fixed)):
-                if 'ts_3-1' not in id1[i]: continue
+                if 'ts_3-1' not in id1[i] and data_type=="brain": continue
+                if 'test_3-0' not in id1[i] and data_type=="liver": continue
                 # seg_thres = 1.2 if not ('normal' in args.checkpoint) else 1.8
                 seg_thres = 1.5
                 print('using seg_thres: {}'.format(seg_thres))
@@ -494,7 +513,7 @@ def main():
                             pa('{}/{}'.format(se_dir, idx)).mkdir(parents=True, exist_ok=True)
                             T.ToPILImage()(ims[im]).save('{}/{}/{}_{}.png'.format(se_dir, idx, k, idx))
                         print('save to {}/{}/{}_{}.png'.format(se_dir, selected_idx, k, selected_idx))
-                import ipdb; ipdb.set_trace()
+                # import ipdb; ipdb.set_trace()
         dices = []
 
 
@@ -520,7 +539,7 @@ def main():
             results[key].extend(dice.cpu().numpy())
             dices.append(dice.cpu().numpy())
             # add original dice
-            if False:
+            if True:
                 original_dice, _ = dice_jaccard(sseg1, sseg2)
                 key = 'o_dice_{}'.format(k)
                 if key not in results:

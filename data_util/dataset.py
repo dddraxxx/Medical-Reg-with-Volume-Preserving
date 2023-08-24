@@ -17,7 +17,7 @@ class Hdf5Reader:
         except Exception:
             print('{} not found!'.format(path))
             self.file = None
-    
+
     # keys method
     def keys(self):
         if self.file is None:
@@ -54,7 +54,7 @@ class FileManager:
             raise KeyError('{} not found'.format(key))
 
 
-class Data(Dataset):
+class RawData():
     def __init__(self, split_path, rounds=None, affine=None, scheme=None, **kwargs):
         with open(split_path, 'r') as f:
             config = json.load(f)
@@ -73,7 +73,7 @@ class Data(Dataset):
             for entry in v:
                 if entry.split('/')[-1] == '*':
                     entries = self.files.files[entry[:entry.rfind('/')]].keys()
-                    for e in entries: 
+                    for e in entries:
                         ee = entry.replace('*',e)
                         self.subset[k][ee] = self.files[ee]
                 else:
@@ -100,7 +100,7 @@ class Data(Dataset):
                 assert len(self.schemes[scheme]) == 1
                 self.affine_npy = [np.load(affine_dct[k], allow_pickle=True).item()
                                 for k in self.schemes[scheme].items() if k in affine_dct][0]
-        
+
             # no fraction used
             if 'lits_d'==scheme or 'lits_d' in self.schemes[scheme]:
                 print('using lits_d')
@@ -115,10 +115,10 @@ class Data(Dataset):
 
     def get_instance(self, id):
         return self.files[id]
-    
+
     def get_pairs(self, data, unordered=True, paired=None):
         pairs = []
-        if paired: 
+        if paired:
             # change the data to dict accoridng to the id
             dct_data = {d['id'].replace('_','/'): d for d in data}
             # return the data arranged by the paired list
@@ -130,7 +130,7 @@ class Data(Dataset):
                     if unordered or i < j:
                         pairs.append((d1, d2))
         return pairs
-    
+
     def get_pairs_with_gt(self, dct):
         pairs = []
         for k in dct:
@@ -154,7 +154,7 @@ class Data(Dataset):
                     i2['id'] = v
                     pairs.append((dct[k], i2))
         return pairs
-    
+
     def __len__(self):
         return self.rounds
 
@@ -197,8 +197,12 @@ class Data(Dataset):
             ret['compute_mask'] = compute_mask[...]
         return ret
 
+class Data(RawData, Dataset):
+    def __init__(self, args, **kwargs):
+        RawData.__init__(self, args, **kwargs)
+
 if __name__ == '__main__':
-    data = Data('/home/hynx/regis/Recursive-Cascaded-Networks/datasets/liver.json', scheme='sliver')
+    data = Data('/home/hynx/regis/recursive_cascaded_networks/datasets/liver_cust.json', scheme='sliver')
     import sys
     sys.path.append('.')
     from tools.utils import show_img, combo_imgs
@@ -222,7 +226,4 @@ if __name__ == '__main__':
         ims.append(np.array(im))
     print(point1)
     # combo_imgs(img1, seg1).save('img1.png')
-    combo_imgs(img1, *ims).save('img1.png')
-
-
-
+    # combo_imgs(img1, *ims).save('img1.png')

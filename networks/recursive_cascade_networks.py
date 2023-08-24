@@ -5,6 +5,7 @@ from .transform import sample_power, free_form_fields
 from .base_networks import *
 from .layers import SpatialTransformer
 from .pre_register import PreRegister
+from .hyper_net import HyperModel
 
 class RecursiveCascadeNetwork(nn.Module):
     """
@@ -17,7 +18,7 @@ class RecursiveCascadeNetwork(nn.Module):
         in_channels (int): The number of input channels.
         compute_mask (bool): Whether to compute the mask before registration by using the pre-registration module.
     """
-    def __init__(self, n_cascades, im_size=(512, 512), base_network='VTN', in_channels=2, use_affine=True):
+    def __init__(self, n_cascades, im_size=(512, 512), base_network='VTN', in_channels=2, use_affine=True, hyper_net=False):
         super(RecursiveCascadeNetwork, self).__init__()
         self.n_casescades = n_cascades
         self.im_size = im_size
@@ -26,6 +27,9 @@ class RecursiveCascadeNetwork(nn.Module):
         self.in_channels = in_channels
 
         device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
+        if hyper_net:
+            self.hypernet = HyperModel(nb_hyp_params=1, nb_hyp_layers=6, nb_hyp_units=128)
         self.stems = nn.ModuleList()
         # See note in base_networks.py about the assumption in the image shape
         if use_affine:
@@ -36,7 +40,7 @@ class RecursiveCascadeNetwork(nn.Module):
         assert base_network in BASE_NETWORK
         base = eval(base_network)
         for i in range(n_cascades):
-            self.stems.append(base(im_size=im_size, flow_multiplier=1.0 / n_cascades, in_channels=in_channels))
+            self.stems.append(base(im_size=im_size, flow_multiplier=1.0 / n_cascades, in_channels=in_channels, hyper_net=hyper_net))
 
         # Parallelize across all available GPUs
         # if torch.cuda.device_count() > 1:
@@ -66,7 +70,7 @@ class RecursiveCascadeNetwork(nn.Module):
                 torch.nn.init.xavier_uniform_(module.weight)
                 if module.bias is not None:
                     torch.nn.init.zeros_(module.bias)
-        
+
         def load_state_dict(self, state_dict, strict=True):
             """
             Copies parameters and buffers from :attr:`state_dict`
@@ -88,7 +92,7 @@ class RecursiveCascadeNetwork(nn.Module):
                     param = param.data
                 own_state[name].copy_(param)
         self.stems.load_state_dict = load_state_dict.__get__(self.stems, nn.ModuleList)
-    
+
     def build_stage1_model(self, state_path='/home/hynx/regis/recursive-cascaded-networks/logs/Jan08_180325_normal-vtn', base_network='VTN'):
         """
         Build the stage 1 model from the saved state
@@ -105,11 +109,11 @@ class RecursiveCascadeNetwork(nn.Module):
         """
         Build the pre-register module. The module is currently built on the stage1 model.
         """
-        state_path = state_path or '/home/hynx/regis/recursive-cascaded-networks/logs/Jan08_180325_normal-vtn'
+        state_path = state_path or '/home/hynx/regis/recursive_cascaded_networks/logs/Jan08_180325_normal-vtn'
         self.pre_register: PreRegister = PreRegister(self.build_stage1_model(state_path, base_network), template_input, template_seg)
         return self.pre_register
 
-    def forward(self, fixed, moving, return_affine=False, return_neg=False):
+    def forward(self, fixed, moving, return_affine=False, return_neg=False, hyp_input=None):
         # think about how to migrate the pre-computing into the model
         # if self.compute_mask:
         #     moving_seg = self.pre_register(moving)
@@ -118,6 +122,10 @@ class RecursiveCascadeNetwork(nn.Module):
         stem_results = []
         agg_flows = []
         neg_flow = None
+        hyp_tensor = None
+        if hyp_input is not None and hasattr(self, 'hypernet'):
+            hyp_tensor = self.hypernet(hyp_input)
+
         if self.use_affine:
             # Affine registration
             flow, affine_params = self.stems[0](fixed, moving)
@@ -135,7 +143,7 @@ class RecursiveCascadeNetwork(nn.Module):
             neg_flow = self.stems[0].neg_flow(affine_params['theta'], moving.size())
         for model in self.stems[1:]: # cascades
             # registration between the fixed and the warped from last cascade
-            flow = model(fixed, stem_results[-1], return_neg=return_neg)
+            flow = model(fixed, stem_results[-1], return_neg=return_neg, hyp_tensor=hyp_tensor)
             if return_neg:
                 neg_fl = flow[1]
                 ## reverse flow cannot utilize the affine params
@@ -167,7 +175,7 @@ class RecursiveCascadeNetwork(nn.Module):
         if return_affine:
             returns.append(affine_params)
         return returns
-    
+
     def composite_flow(self, old_flow, new_flow):
         """
         Composite two flows into one
@@ -184,5 +192,3 @@ class RecursiveCascadeNetwork(nn.Module):
         aug_img2 = self.reconstruction(img2, aug_flow)
         aug_seg2 = self.reconstruction(seg2, aug_flow)
         return aug_img2, aug_seg2
-
-

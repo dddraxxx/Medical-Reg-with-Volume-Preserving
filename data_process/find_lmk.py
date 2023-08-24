@@ -2,9 +2,12 @@
 
 #%%
 import json
+
+import matplotlib.pyplot as plt
 import nibabel as nib
 import numpy as np
-from utils import getLargestCC, bbox_seg
+from utils import bbox_seg, draw_img_point, getLargestCC
+
 
 # let's see step by step if the landmarks is right
 def get_lmk_file(pid):
@@ -52,22 +55,16 @@ def convert_to_cropcoord(coord, bbox):
     crop_coord = coord - min_xyz
     return crop_coord
 
-import matplotlib.pyplot as plt
-def draw_img_point(img, pt):
-    fig = plt.figure()
-    ax = fig.gca()
-
-    # draw the point
-    pt = np.round(pt).astype(int)
-    ax.scatter(pt[2], pt[1], c='r', s=10)
-
-    # draw the image
-    img = img[pt[0], :, :]
-    ax.imshow(img, cmap='gray')
-    return ax
-
 class LMK:
-    """ Use LPS coordinate system"""
+    """ Store the landmarks of a patient
+
+    Properties:
+        lps_lmks: use LPS coordinate system in nii
+        pixel_coord: use pixel coordinate system in nii
+        crop_coord: coordinate after cropping
+        resize_coord: coordinate after resizing
+        h5_coord: coordinate in h5 file
+    """
     def __init__(self, pid):
         self.pid = pid
         self.lmk_file = get_lmk_file(pid)
@@ -108,8 +105,15 @@ class LMK:
         self.resize_coord = {}
         for lmk in self.crop_coord:
             crop_coord = self.crop_coord[lmk]
-            fac = get_resize_factor(bbox[3:] - bbox[:3] + 1, reshape_size)
-            self.resize_coord.update({lmk: crop_coord * fac})
+
+            # we need to consider align_corners in torch.nn.functional.interpolate
+            ali_crop_coord = crop_coord + 0.5
+            orig_size = bbox[3:] - bbox[:3] + 1
+            after_size = reshape_size
+            fac = after_size / orig_size
+            ali_resize_coord = ali_crop_coord * fac - 0.5
+
+            self.resize_coord.update({lmk: ali_resize_coord})
         return self.resize_coord
 
     def convert(self):
@@ -125,80 +129,33 @@ class LMK:
         # 3. convert to resize_coord
         reshape_size = np.array([128, 128, 128])
         self.convert_to_resizecoord(bbox, reshape_size)
+        self.h5_coord = self.resize_coord
         return self.resize_coord
 
 
-lmks_target = ["P1-1", "P1-2"]
-lmks = [LMK(pid) for pid in lmks_target]
-# print(lmks[0].lps_lmks)
-
+#%%
 import h5py
 def get_h5_arr(pid):
     h5f = '/home/hynx/regis/recursive_cascaded_networks/datasets/brain_test_23.h5'
     with h5py.File(h5f, 'r') as f:
         return f[pid[1:]]['volume'][...]
 
-h5arr = get_h5_arr(lmks_target[0])
-print(h5arr.shape)
+lmks_target = np.array([["P1-1", "P1-2"],
+               ["P2-1", "P2-2"],])
+lmks = []
+for l in lmks_target:
+    i1, i2 = l
+    lmks.append([LMK(i1), LMK(i2)])
+    lmks[-1][0].convert()
+    lmks[-1][1].convert()
 
-lmks[0].convert()
 #%%
-res_coord = lmks[0].resize_coord['2']
-draw_img_point(h5arr, res_coord)
-#%%
-# 1. We verify if the orginial nii has the correct landmark position
-
-
-import nibabel as nib
-import numpy as np
-nii_0 = nib.load(get_original_nii(lmks_target[0]))
-# print(nii_0)
-lps_point = np.array(lmks[0].lps_lmks[2]['position'])
-# find the pixel coordinate of point in nii_0
-coord_RAS = [-lps_point[0], -lps_point[1], lps_point[2]]
-pixel_coord = np.round(np.linalg.inv(nii_0.affine).dot(coord_RAS + [1]))[:3]
-
-# fit (261,319,15) in 3d_slicer
-print("pixel coord: ", pixel_coord) # output [15, 319, 261]
-
-
-pt = pixel_coord
-nii_0arr = nii_0.get_fdata()
-
-# from monai.visualize import matshow3d
-# matshow3d(nii_0.get_fdata(), every_n=5)
-
-#%% 2. we verify that we can get the correct pixel coordinate from h5
-
-# we using seg_mask to find the transformation
-
-
-# transformation: get largerCC --> bbox --> crop (padding) --> resize
-# reload utils
-import importlib
-from importlib import reload
-import utils
-reload(utils)
-from utils import getLargestCC, bbox_seg
-
-img_arr = nib.load(get_striped_nii(lmks_target[0])).get_fdata()
-seg_arr = img_arr > img_arr.min()
-bbox0 = get_crop_box(seg_arr, 20)
-print('box size: ', bbox0[3:] - bbox0[:3])
-crop_coord = convert_to_cropcoord(pixel_coord, bbox0)
-print("crop coord: ", crop_coord)
-
-# verify the crop coord
-ax = draw_img_point(nii_0arr, pt)
-bbox = get_crop_box(seg_arr, 0)
-ax.plot(bbox[2], bbox[1], c='r', marker='o', markersize=10)
-ax.plot(bbox[5], bbox[4], c='r', marker='o', markersize=10)
-ax.imshow(seg_arr[int(pt[0]), :, :], cmap='gray', alpha=0.5)
-
-# get resize factor
-box_size = np.array(bbox0[3:] - bbox0[:3] + 1)
-reshape_size = np.array([128, 128, 128])
-
-resize_factor = get_resize_factor(box_size, reshape_size)
-res_coord = crop_coord * resize_factor
-print("resized coord: ", res_coord)
+if __name__ == '__main__':
+    def visualize_P(i):
+        lmksi = lmks[i]
+        lmks_targeti = lmks_target[i]
+        for i in range(len(lmks)):
+            h5arr = get_h5_arr(lmks_targeti[i])
+            res_coord = lmksi[i].resize_coord['1']
+            draw_img_point(h5arr, res_coord)
+    visualize_P(1)

@@ -4,7 +4,7 @@ import torch.nn as nn
 from torch.nn import ReLU, LeakyReLU
 import torch.nn.functional as F
 from torch.distributions.normal import Normal
-from . import layers
+from . import layers, hyper_net as hn
 import numpy as np
 
 # from networks.DMR.model import DMR as dmr
@@ -15,14 +15,14 @@ BASE_NETWORK = ['VTN', 'VXM', 'TSM']
 def conv(dim=2):
     if dim == 2:
         return nn.Conv2d
-    
+
     return nn.Conv3d
 
 
 def trans_conv(dim=2):
     if dim == 2:
         return nn.ConvTranspose2d
-    
+
     return nn.ConvTranspose3d
 
 
@@ -35,6 +35,12 @@ def convolveReLU(in_channels, out_channels, kernel_size, stride, dim=2):
 
 def convolveLeakyReLU(in_channels, out_channels, kernel_size, stride, dim=2, leakyr_slope=0.1):
     return nn.Sequential(LeakyReLU(leakyr_slope), convolve(in_channels, out_channels, kernel_size, stride, dim=dim))
+
+def hyp_convolve(in_channels, out_channels, kernel_size, stride, dim=2, hyp_unit=128):
+    return hn.HyperConv(rank=dim, hyp_units=hyp_unit, in_channels=in_channels, out_channels=out_channels, kernel_size=kernel_size, stride=stride, padding=1)
+
+def hyp_convolveLeakyReLU(in_channels, out_channels, kernel_size, stride, dim=2, leakyr_slope=0.1, hyp_unit=128):
+    return nn.Sequential(LeakyReLU(leakyr_slope), hyp_convolve(in_channels, out_channels, kernel_size, stride, dim=dim))
 
 
 def upconvolve(in_channels, out_channels, kernel_size, stride, dim=2):
@@ -64,7 +70,7 @@ class Unet(nn.Module):
         decoder: [32, 32, 32, 32, 32, 16, 16]
     """
 
-    def __init__(self, inshape, nb_features=None, nb_levels=None, feat_mult=1, in_channels=2):
+    def __init__(self, inshape, nb_features=None, nb_levels=None, feat_mult=1, in_channels=2, hyper_net=False):
         super().__init__()
         """
         Parameters:
@@ -75,6 +81,7 @@ class Unet(nn.Module):
             nb_levels: Number of levels in unet. Only used when nb_features is an integer. Default is None.
             feat_mult: Per-level feature multiplier. Only used when nb_features is an integer. Default is 1.
         """
+        self.is_hyper = hyper_net
 
         # ensure correct dimensionality
         ndims = len(inshape)
@@ -99,10 +106,14 @@ class Unet(nn.Module):
         self.upsample = nn.Upsample(scale_factor=2, mode='nearest')
 
         # configure encoder (down-sampling path)
+        if self.is_hyper:
+            conv_block = hyp_convolveLeakyReLU
+        else:
+            conv_block = convolveLeakyReLU
         prev_nf = in_channels
         self.downarm = nn.ModuleList()
         for nf in self.enc_nf:
-            self.downarm.append(convolveLeakyReLU(prev_nf, nf, dim=ndims, kernel_size=3, stride=2, leakyr_slope=0.1))
+            self.downarm.append(conv_block(prev_nf, nf, dim=ndims, kernel_size=3, stride=2, leakyr_slope=0.1))
             prev_nf = nf
 
         # configure decoder (up-sampling path)
@@ -110,17 +121,20 @@ class Unet(nn.Module):
         self.uparm = nn.ModuleList()
         for i, nf in enumerate(self.dec_nf[:len(self.enc_nf)]):
             channels = prev_nf + enc_history[i] if i > 0 else prev_nf
-            self.uparm.append(convolveLeakyReLU(channels, nf, dim=ndims, kernel_size=3, stride=1, leakyr_slope=0.1))
+            self.uparm.append(conv_block(channels, nf, dim=ndims, kernel_size=3, stride=1, leakyr_slope=0.1))
             prev_nf = nf
 
         # configure extra decoder convolutions (no up-sampling)
         prev_nf += in_channels
         self.extras = nn.ModuleList()
         for nf in self.dec_nf[len(self.enc_nf):]:
-            self.extras.append(convolveLeakyReLU(prev_nf, nf, dim=ndims, kernel_size=3, stride=1, leakyr_slope=0.1))
+            self.extras.append(conv_block(prev_nf, nf, dim=ndims, kernel_size=3, stride=1, leakyr_slope=0.1))
             prev_nf = nf
- 
-    def forward(self, x):
+
+    def forward(self, x, hyp_tensor=None):
+        if self.is_hyper:
+            for layer in self.downarm+self.uparm+self.extras:
+                layer[1].build_hyp(hyp_tensor)
 
         # get encoder activations
         x_enc = [x]
@@ -156,8 +170,9 @@ class VXM(nn.Module):
         int_downsize=2,
         in_channels=2,
         bidir=False,
-        use_probs=False):
-        """ 
+        use_probs=False,
+        hyper_net=False,):
+        """
         Parameters:
             inshape: Input shape. e.g. (192, 192, 192)
             nb_unet_features: Unet convolutional features. Can be specified via a list of lists with
@@ -184,6 +199,7 @@ class VXM(nn.Module):
             nb_levels=nb_unet_levels,
             feat_mult=unet_feat_mult,
             in_channels=in_channels,
+            hyper_net=hyper_net
         )
 
         # configure unet to flow field layer
@@ -215,7 +231,7 @@ class VXM(nn.Module):
         # configure transformer
         self.flow_multiplier = flow_multiplier
 
-    def forward(self, source, target, return_preint=False, return_neg=False):
+    def forward(self, source, target, return_preint=False, return_neg=False, hyp_tensor=None):
         '''
         Parameters:
             source: Source image tensor.
@@ -225,7 +241,7 @@ class VXM(nn.Module):
 
         # concatenate inputs and propagate unet
         x = torch.cat([source, target], dim=1)
-        x = self.unet_model(x)
+        x = self.unet_model(x, hyp_tensor=hyp_tensor)
 
         # transform into flow field
         flow_field = self.flow(x)
@@ -249,13 +265,13 @@ class VXM(nn.Module):
             if self.fullsize:
                 pos_flow = self.fullsize(pos_flow)
                 neg_flow = self.fullsize(neg_flow) if bidir else None
-        
+
         returns = [pos_flow]
         if bidir: returns.append(neg_flow)
         if return_preint: returns.append(preint_flow)
         returns = [r*self.flow_multiplier for r in returns]
         return returns if len(returns)>1 else returns[0]
-        
+
 
 class VTN(nn.Module):
     """
@@ -267,7 +283,7 @@ class VTN(nn.Module):
         channels (int): The number of channels in the first convolution. The following convolution channels will be [2x, 4x, 8x, 16x] of this value.
         in_channels (int): The number of input channels.
     """
-    def __init__(self, im_size=(128,128,128), flow_multiplier=1., channels=16, in_channels=2):
+    def __init__(self, im_size=(128,128,128), flow_multiplier=1., channels=16, in_channels=2, hyper_net=None):
         super(VTN, self).__init__()
         self.flow_multiplier = flow_multiplier
         self.channels = channels
@@ -308,7 +324,7 @@ class VTN(nn.Module):
 
         self.pred0 = upconvolve(2 * channels + dim, dim, 4, 2, dim=dim)
 
-    def forward(self, fixed, moving, return_neg = False):
+    def forward(self, fixed, moving, return_neg = False, hyp_tensor=None):
         concat_image = torch.cat((fixed, moving), dim=1)  # 2 x 512 x 512
         x1 = self.conv1(concat_image)  # 16 x 256 x 256
         x2 = self.conv2(x1)  # 32 x 128 x 128
@@ -354,7 +370,7 @@ class VTN(nn.Module):
 class VTNAffineStem(nn.Module):
     """
     VTN affine stem. This is the first part of the VTN network. A multi-layer convolutional network that calculates the affine transformation parameters.
-    
+
     Args:
         dim (int): Dimension of the input image.
         channels (int): Number of channels in the first convolution.
@@ -400,16 +416,16 @@ class VTNAffineStem(nn.Module):
         """
         Identity Matrix
             | 1 0 0 0 |
-        I = | 0 1 0 0 | 
+        I = | 0 1 0 0 |
             | 0 0 1 0 |
         """
         if dim == 3:
             self.fc_loc[-1].bias.data.copy_(torch.tensor([1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0], dtype=torch.float))
         else:
             self.fc_loc[-1].bias.data.copy_(torch.tensor([1, 0, 0, 0, 1, 0], dtype=torch.float))
-        
+
         self.create_flow = self.cr_flow
-        
+
     def cr_flow(self, theta, size):
         shape = size[2:]
         flow = F.affine_grid(theta-torch.eye(len(shape), len(shape)+1, device=theta.device), size, align_corners=False)
@@ -427,7 +443,7 @@ class VTNAffineStem(nn.Module):
             flow = flow.permute(0, 3, 1, 2)  # batch x 2 x 512 x 512
         else:
             flow = flow.permute(0, 4, 1, 2, 3)
-        return flow  
+        return flow
     def rev_affine(self, theta, dim=2):
         b = theta[:, :, dim:]
         inv_w = torch.inverse(theta[:, :dim, :dim])
@@ -469,9 +485,9 @@ class VTNAffineStem(nn.Module):
 
 class TSMAffineStem(nn.Module):
     """
-    TSM affine stem. This is the first part of the TSM network. 
+    TSM affine stem. This is the first part of the TSM network.
     Credit for https://github.com/junyuchen245/TransMorph_Transformer_for_Medical_Image_Registration.git.
-    
+
     Args:
         dim (int): Dimension of the input image.
         channels (int): Number of channels in the first convolution.
@@ -545,7 +561,7 @@ class TSMAffineStem(nn.Module):
         flow = self.cr_flow(theta, moving.size())
         # theta: the affine param
         return flow, {'theta': theta}
-    
+
 class TSM(nn.Module):
     '''
     TransfMorph model. Credit for https://github.com/junyuchen245/TransMorph_Transformer_for_Medical_Image_Registration.git.
@@ -557,7 +573,7 @@ class TSM(nn.Module):
         config['in_chans'] = in_channels
         self.model = tsm(config)
         self.flow_multiplier = flow_multiplier
-    
+
     def forward(self, fixed, moving, return_neg=False):
         x_in = torch.cat((fixed, moving), dim=1)
         flow = self.model(x_in)
@@ -654,7 +670,7 @@ if __name__ == "__main__":
 #         vol_size = im_size
 #         self.model = dmr(len(vol_size), vol_size, layer=layers)
 #         self.flow_multiplier = flow_multiplier
-    
+
 #     def forward(self, fixed, moving, return_neg=False):
 #         flow = self.model(fixed, moving)
 #         flow = self.flow_multiplier*flow

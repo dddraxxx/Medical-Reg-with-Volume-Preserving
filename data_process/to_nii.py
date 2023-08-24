@@ -5,7 +5,6 @@ import torch.nn.functional as F
 from multiprocessing import Pool, cpu_count
 import subprocess
 from monai.visualize import matshow3d
-from skimage.measure import label
 from monai.transforms import (
     Compose,
     LoadImaged,
@@ -23,6 +22,10 @@ import nibabel as nib
 import numpy as np
 import matplotlib.pyplot as plt
 from pathlib import Path as pa
+
+import sys
+import os
+sys.path.insert(0, os.path.abspath('..'))
 from tools.utils import *
 import numpy as np
 
@@ -264,21 +267,7 @@ for d, s in zip(sorted(pa(d_path).glob('P*.nii.gz')), sorted(pa(s_path).glob('P*
 # ims[0]
 
 # %% get h5
-
-
-def getLargestCC(segmentation):
-    labels = label(segmentation)
-    assert (labels.max() != 0)  # assume at least 1 CC
-    largestCC = labels == np.argmax(np.bincount(labels.flat)[1:])+1
-    return largestCC
-# crop seg by the bounding box where value is larger than 0
-
-
-def bbox_seg(seg):
-    bbox = seg.nonzero()
-    bbox = np.array([np.min(bbox[0]), np.min(bbox[1]), np.min(
-        bbox[2]), np.max(bbox[0]), np.max(bbox[1]), np.max(bbox[2])])
-    return bbox
+from utils import getLargestCC, bbox_seg
 
 
 def crop(seg, bbox, pad=5):
@@ -491,5 +480,3 @@ for t1, t1_seg in zip(
     br2h5(t1, t1_seg)
 
 h5file.close()
-
-# %%

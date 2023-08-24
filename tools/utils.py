@@ -43,6 +43,9 @@ def interpolate_flow(flow, points):
 def load_model(state_dict, model):
     # load state dict
     model.stems.load_state_dict(state_dict['stem_state_dict'])
+    # if hypernet in model attribute
+    if hasattr(model, 'hypernet'):
+        model.hypernet.load_state_dict(state_dict['hypernet_state_dict'])
     return model
 
 def load_model_from_dir(checkpoint_dir, model):
@@ -127,13 +130,13 @@ def draw_seg_on_vol(data, lb, if_norm=True, alpha=0.3, colors=["green", "red", "
     Plot a 3D volume with binary segmentation masks overlaid on it.
 
     Parameters:
-        data (torch.Tensor): The input 3D volume, shape: ((1,) S, H, W). 
+        data (torch.Tensor): The input 3D volume, shape: ((1,) S, H, W).
         lb (torch.Tensor): Binary masks representing segmentations, shape: ((M,) S, H, W).
         if_norm (bool): Whether to normalize the input volume. Default is True.
         alpha (float): Transparency of the overlay masks. Default is 0.3.
         colors (list): List of colors to use for overlay masks. Default is ["green", "red", "blue"].
         to_onehot (bool): Whether to convert the input masks to one-hot encoding. Default is False.
-        
+
     Returns:
         torch.Tensor: Normalized output volume with overlay masks, shape: (S, 3, H, W).
     """
@@ -160,7 +163,7 @@ def draw_seg_on_vol(data, lb, if_norm=True, alpha=0.3, colors=["green", "red", "
     return torch.stack(res)/255
 
 
-    
+
 def show_img(res, save_path=None, norm=True, cmap=None, inter_dst=5) -> Image:
     import torchvision.transforms as T
     res = tt(res)
@@ -230,7 +233,7 @@ def plt_img3d_axes(imgs, func, intrv=5, fig=None, figsize=(10, 10), picked=None,
     """
     if picked is not None:
         it = list(picked)
-        nrows = (len(it)+intrv-1)//intrv 
+        nrows = (len(it)+intrv-1)//intrv
     else:
         it = range(0, len(imgs), intrv)
         nrows = (len(imgs)+1)//(intrv**2)
@@ -284,7 +287,7 @@ def cal_rev_flow(flow):
 def cal_rev_flow_gpu(flow):
     """
     flow: (B, 3, H, W, D)
-    
+
     Return:
     rev_flow: (B, 3, H, W, D)"""
     bs = flow.shape[0]
@@ -301,7 +304,7 @@ def cal_rev_flow_gpu(flow):
 def quick_cal_rev_flow_gpu(flow):
     """
     flow: (B, 3, H, W, D)
-    
+
     Return:
     rev_flow: (B, 3, H, W, D)"""
     bs = flow.shape[0]
@@ -319,7 +322,7 @@ def find_2dbound(seg, kernel=3, thres=0.5):
 
     Args:
         seg: (D,H,W)
-    
+
     Returns:
         bound: (D,H,W)
     '''
@@ -343,7 +346,7 @@ def find_surf(seg, kernel=3, thres=1):
     Args:
         seg: (**,D,H,W)
         radius: int
-    
+
     Returns:
         surf: (**,D,H,W)
     '''
@@ -360,16 +363,16 @@ def find_surf(seg, kernel=3, thres=1):
 class OnPlt:
     def __init__(self, **kargs):
         self.kargs = kargs
-        
+
     def __enter__(self):
         plt.figure(**self.kargs)
-        
+
     def __exit__(self, exc_type, exc_value, traceback):
         plt.close()
         if exc_type is not None:
             print(f'An exception of type {exc_type} occurred with value {exc_value}.')
         return False
-    
+
 import frnn
 def get_nearest(ref, points, k, picked_points):
     """

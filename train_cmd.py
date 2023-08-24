@@ -1,5 +1,5 @@
 #%% generate comands for training
-base_command = 'python train.py'
+base_command = 'python train_simple.py'
 
 import argparse
 parser = argparse.ArgumentParser()
@@ -43,6 +43,8 @@ parser.add_argument('-b', '--base', type= lambda x: {
                     , default='vtn', help='vtn or vxm or dmr')
 ### add debug flag
 parser.add_argument('-db', '--debug', action='store_true', help='debug mode')
+# hyper net
+parser.add_argument('-hyp', action="store_true", help="whether use hypernet")
 #%%
 args = parser.parse_args()
 command = {}
@@ -106,6 +108,9 @@ elif args.base == 'dmr':
     command['-ua'] = '0'
 elif args.base == 'tsm':
     command['-base'] = 'TSM'
+
+if args.hyp:
+    command['-hpv'] = ''
 
 if args.debug:
     command['--debug'] = ''

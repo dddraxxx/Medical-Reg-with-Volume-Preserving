@@ -19,7 +19,7 @@ class PreRegister(nn.Module):
         self.register_buffer('template_input', template_input)
         self.register_buffer('template_seg', template_seg)
         self.freeze()
-    
+
     def freeze(self):
         for param in self.parameters():
             param.requires_grad = False
@@ -40,7 +40,7 @@ class PreRegister(nn.Module):
             s1_flow = s1_agg_flows[-1]
             w_template_seg = stage1_model.reconstruction(template_seg.expand_as(template_input), s1_flow)
             mask_moving = w_template_seg
-        
+
         if cfg.mask_threshold < 0: # which means that it do not want tumor mask
             input_seg = mask_moving
             compute_mask = mask_moving.new_zeros(mask_moving.shape)
@@ -52,7 +52,7 @@ class PreRegister(nn.Module):
                 img_dict = {k: v.cpu() for k, v in img_dict.items()}
                 return *returns, log_scalars, img_dict
             return returns
-            
+
         def warp(fixed, moving, seg, reg_model):
             """ Warp moving image to fixed image, and return warped seg """
             with torch.no_grad():
@@ -65,14 +65,14 @@ class PreRegister(nn.Module):
         def extract_tumor_mask(stage1_moving_flow, moving_mask, n=1, thres=3):
             flow_det_moving = jacobian_det(stage1_moving_flow, return_det=True)
             flow_det_moving = flow_det_moving.unsqueeze(1).abs()
-            # get n x n neighbors 
+            # get n x n neighbors
             flow_ratio = flow_det_moving.clamp(1/thres,thres)
             sizes = F.interpolate(flow_ratio, size=fixed.shape[-3:], mode='trilinear', align_corners=False) \
                 if flow_ratio.shape[-3:]!=fixed.shape[-3:] else flow_ratio
             flow_ratio = F.avg_pool3d(sizes, kernel_size=n, stride=1, padding=n//2)
             if not cfg.get('only_shrink', True):
-                flow_ratio = torch.where(flow_ratio>1, 
-                                                flow_ratio, 
+                flow_ratio = torch.where(flow_ratio>1,
+                                                flow_ratio,
                                                 1/flow_ratio)
             if moving_mask is not None:
                 filter_nonorgan(flow_ratio, moving_mask)
@@ -96,7 +96,7 @@ class PreRegister(nn.Module):
         # find shrinking tumors
         if cfg.get('use_bilateral', False) and cfg.use_2nd_flow:
             moving_st1 = bf3d(moving)
-        else: 
+        else:
             moving_st1 = moving
         if not cfg.stage1_rev:
             w_moving, w_moving_seg, rs1_flow = warp(fixed, moving_st1, mask_moving, stage1_model)
@@ -112,7 +112,7 @@ class PreRegister(nn.Module):
             flow_ratio = extract_tumor_mask(rs1_flow, w_moving_seg, n=cfg.masked_neighbor) * target_ratio
             if cfg.boundary_thickness>0:
                 flow_ratio = remove_boundary_weights(flow_ratio, w_moving_seg)
-            ### temporarily use fix->moving flow to solve this inversion 
+            ### temporarily use fix->moving flow to solve this inversion
             ### except it is VXM
             ### will it cause the shrinking of tumor?
             ## reverse it to input seg, but it is too slow
@@ -151,9 +151,9 @@ class PreRegister(nn.Module):
 
         if cfg.use_2nd_flow:
             dynamic_mask = rev_flow_ratio2
-        else: 
+        else:
             dynamic_mask = rev_flow_ratio
-        
+
         if cfg.get('use_seg_help', False):
             # use the segmentation to help the flow
             dynamic_mask[seg2<2] = 0
@@ -181,7 +181,7 @@ class PreRegister(nn.Module):
                 img_dict['soft_mask_on_seg2'] = visualize_3d(draw_seg_on_vol(dynamic_mask[0,0],
                                                                             seg2[0,0].round().long(),
                                                                             to_onehot=True, inter_dst=5), inter_dst=1)
-            # to visualize soft masks 
+            # to visualize soft masks
             if cfg.debug:
                 dm1 = trsf_f(rev_flow_ratio[0,0])
                 dm2 = trsf_f(rev_flow_ratio2[0,0])
