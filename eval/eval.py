@@ -49,6 +49,7 @@ parser.add_argument('-rd', '--region_dice', default=True, type=lambda x: x.lower
 parser.add_argument('-sd', '--surf_dist', default=False, type=lambda x: x.lower() in ['true', '1', 't', 'y', 'yes'], help='If calculate dist for each surface')
 parser.add_argument('-only_vis', '--only_vis_target', action='store_true', help='If only visualize target')
 parser.add_argument('-ua','--use_ants', action='store_true', help='if use ants to register')
+parser.add_argument('-hyp_v', type=float, default=0, help='hypernet value')
 parser.add_argument('--debug', action='store_true', help='if debug')
 args = parser.parse_args()
 if args.checkpoint == 'normal':
@@ -85,6 +86,7 @@ def main():
     val_dataset = Data(args.dataset, scheme=args.val_subset or Split.VALID)
     val_loader = DataLoader(val_dataset, batch_size=args.batch_size, num_workers=min(8, args.batch_size), shuffle=False)
     # build framework
+    cfg_training.hyper_vp = hasattr(cfg_training, "hyper_vp") and cfg_training.hyper_vp
     model = RecursiveCascadeNetwork(n_cascades=cfg_training.n_cascades, im_size=image_size, base_network=cfg_training.base_network, in_channels=2+bool(cfg_training.masked), hyper_net=cfg_training.hyper_vp).cuda()
     # add checkpoint loading
     from tools.utils import load_model, load_model_from_dir
@@ -98,9 +100,15 @@ def main():
     import re
     # "([^\/]*_\d{6}_[^\/]*)"gm
     exp_name = re.search(r"([^\/]*-\d{6}_[^\/]*)", model_path).group(1)
-    output_fname = './eval/evaluations/{}_{}_{}.txt'.format(exp_name, args.val_subset or Split.VALID, '' if not args.lmd else 'lm{}'.format(args.lmk_radius))
+    if cfg_training.hyper_vp:
+        output_fname = './eval/evaluations/{}/test-set{}_{}hyp_{}_{}.txt'.format('hyp',
+                                                               args.val_subset or Split.VALID, args.hyp_v, exp_name, '' if not args.lmd else 'lm{}'.format(args.lmk_radius))
+    else:
+        output_fname = './eval/evaluations/{}_{}_{}.txt'.format(args.val_subset or Split.VALID, args.hyp_v,exp_name, '' if not args.lmd else 'lm{}'.format(args.lmk_radius))
     output_fname = os.path.abspath(output_fname)
     print('will save to', output_fname)
+    if not os.path.exists(output_fname):
+        os.makedirs(os.path.dirname(output_fname), exist_ok=True)
 
     # stage 1 model setup
     if cfg_training.masked in ['soft', 'hard']:
@@ -180,10 +188,11 @@ def main():
                     fixed[seg2>1.5] = (org_mean[:,None,None,None,None]+noise)[seg2>1.5]
                     show_img(fixed[0,0]).save('3.jpg')
 
-                warped_, flows, agg_flows, affine_params = model(fixed, moving_, return_affine=True, hyp_input=fixed.new_zeros(fixed.shape[0], 1))
+                warped_, flows, agg_flows, affine_params = model(fixed, moving_, return_affine=True,
+                                                                 hyp_input=fixed.new_zeros(fixed.shape[0], 1)+args.hyp_v)
 
                 warp_times = 2
-                if 'normal' in args.checkpoint and warp_times-1>0:
+                if False and 'normal' in args.checkpoint and warp_times-1>0:
                 # if 'normal' in args.checkpoint or warp_times-1>0:
                     # remove noise
                     # fixed = fixed - noise
@@ -342,49 +351,8 @@ def main():
                     plt.close('all')
                     print("saving landmarks to {}".format(moving_dir))
 
-        ### Debug use
-        pairs = list(zip(id1, id2))
-        # target_pair = ('lits_{}'.format(84), 'lits_{}'.format(40))
-        target_pair = ('lits_51', '51')
-        # target_pairs = [('lits_{}'.format(51), 'lits_{}'.format(33))]
-        # target_pair = ('lits_{}'.format(51), 'yanx_{}'.format(14))
-        # target_pair = ('lits_{}'.format(115), 'lits_{}'.format(128))
-        # if any([p in pairs for p in target_pairs]):
-        if target_pair in pairs:
-            pair_id = pairs.index(target_pair)
-            pairs_img = [fixed[pair_id,0], moving[pair_id,0], warped[-1][pair_id,0]]
-            # get largest component
-            from skimage.measure import label
-            from skimage.color import label2rgb
-            pairs_seg_organ = [seg1[pair_id,0]>0.5, seg2[pair_id,0]>0.5, w_seg2[pair_id,0]>0.5]
-            pairs_seg = [seg1[pair_id,0]>1.5, seg2[pair_id,0]>1.5, w_seg2[pair_id,0]>1.5]
-            labels = [label(i.cpu()) for i in pairs_seg]
-            # warped labels[1]
-            labels[2] = model.reconstruction(\
-                torch.tensor(labels[1]).float().cuda()[None, None],\
-                 agg_flows[-1][pair_id].unsqueeze(0), \
-                    mode='nearest')[0,0]
-            labels[2] = labels[2].long().cpu().numpy()
-            pairs_draw = [label2rgb(labels[i], pairs_img[i].cpu().numpy(), bg_label=0) for i in range(3)]
-            pairs_draw_organ = [draw_seg_on_vol(pairs_img[i], pairs_seg_organ[i]) for i in range(3)]
-            save_dir = pa('./images/tmp/{}/'.format(args.checkpoint.split('/')[-2]))
-            if not os.path.exists(save_dir):
-                os.mkdir(save_dir)
-            visualize_3d(pairs_draw_organ[0], save_name=save_dir.parent/'{}_so.png'.format(pairs[pair_id][0]), print_=True, color_channel=1)
-            visualize_3d(pairs_draw_organ[1], save_name=save_dir.parent/'{}_so.png'.format(pairs[pair_id][1]), color_channel=1)
-            visualize_3d(pairs_draw_organ[2], save_name=save_dir / '{}_{}_warped_so.png'.format(*pairs[pair_id]), color_channel=1)
-            visualize_3d(pairs_draw[0], save_name=save_dir.parent / '{}_s.png'.format(pairs[pair_id][0]), print_=True, color_channel=3)
-            visualize_3d(pairs_draw[1], save_name=save_dir.parent / '{}_s.png'.format(pairs[pair_id][1]), color_channel=3)
-            visualize_3d(pairs_draw[2], save_name=save_dir / '{}_{}_warped_s.png'.format(*pairs[pair_id]), color_channel=3)
-            visualize_3d(pairs_img[0], save_name=save_dir.parent / '{}.png'.format(pairs[pair_id][0]), print_=True)
-            visualize_3d(pairs_img[1], save_name=save_dir.parent / '{}.png'.format(pairs[pair_id][1]))
-            visualize_3d(pairs_img[2], save_name=save_dir / '{}_{}_warped.png'.format(*pairs[pair_id]))
-            print('save to {}'.format(save_dir))
-            if args.only_vis_target: quit()
-        elif args.only_vis_target:
-            continue
         # visualize figures
-        if True and not args.use_ants:
+        if False and not args.use_ants:
             if 'brain' in cfg_training.dataset:
                 data_type = 'brain'
             elif 'liver' in cfg_training.dataset:
@@ -629,8 +597,8 @@ def main():
             to_ratio = tumor_ratio / organ_ratio
             strr = np.where(to_ratio<1, 1/to_ratio, to_ratio)**2
             results[key].extend(strr)
-            for k in range(len(to_ratio)):
-                print('to_ratio for {} to {}: {:.4f}'.format(id1[k], id2[k], to_ratio[k]**2))
+            # for k in range(len(to_ratio)):
+            #     print('to_ratio for {} to {}: {:.4f}'.format(id1[k], id2[k], to_ratio[k]**2))
 
         if not args.use_ants:
             del fixed, moving, warped, flows, agg_flows, affine_params

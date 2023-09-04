@@ -26,14 +26,14 @@ def similarity(fixed, warped, soft_weight = None):
     if soft_weight is not None:
         soft_weight = torch.flatten(soft_weight, start_dim=1)
     else:
-        soft_weight = var1.new_ones((1,1)) 
+        soft_weight = var1.new_ones((1,1))
     cov12 = torch.mean((flatten_fixed - mean1) * (flatten_warped - mean2) * soft_weight, dim=1, keepdim=True)
     eps = 1e-6
     pearson_r = cov12 / torch.sqrt((var1 + eps) * (var2 + eps)) / torch.mean(soft_weight, dim=1, keepdim=True)
 
     return pearson_r
 
-def sim_loss(fixed, warped, soft_weight = None):
+def sim_loss(fixed, warped, soft_weight = None, return_mean=True):
     """
     Compute pearson correlation between two tensors.
     TODO: Add soft mask support.
@@ -57,12 +57,14 @@ def sim_loss(fixed, warped, soft_weight = None):
     if soft_weight is not None:
         soft_weight = torch.flatten(soft_weight, start_dim=1)
     else:
-        soft_weight = var1.new_ones((1,1)) 
+        soft_weight = var1.new_ones((1,1))
     cov12 = torch.mean((flatten_fixed - mean1) * (flatten_warped - mean2) * soft_weight, dim=1, keepdim=True)
     eps = 1e-6
     pearson_r = cov12 / torch.sqrt((var1 + eps) * (var2 + eps)) / torch.mean(soft_weight, dim=1, keepdim=True)
 
     raw_loss = 1 - pearson_r
+    if not return_mean:
+        return raw_loss*4
     return raw_loss.mean()*4
 
 
@@ -167,7 +169,7 @@ def jacobian_det(flow, return_det=False):
     batch_size, _, height, width, depth = flow.size()
     dx = flow[:, :, 1:, 1:, 1:] - flow[:, :, :-1, 1:, 1:] + flow.new_tensor([1., 0., 0.]).view(1, 3, 1, 1, 1)
     dy = flow[:, :, 1:, 1:, 1:] - flow[:, :, 1:, :-1, 1:] + flow.new_tensor([0., 1., 0.]).view(1, 3, 1, 1, 1)
-    dz = flow[:, :, 1:, 1:, 1:] - flow[:, :, 1:, 1:, :-1] + flow.new_tensor([0., 0., 1.]).view(1, 3, 1, 1, 1) 
+    dz = flow[:, :, 1:, 1:, 1:] - flow[:, :, 1:, 1:, :-1] + flow.new_tensor([0., 0., 1.]).view(1, 3, 1, 1, 1)
     jac = torch.stack([dx, dy, dz], dim=1).permute(0, 3, 4, 5, 1, 2)
     det = torch.det(jac)
     if return_det:
@@ -226,7 +228,7 @@ def dice_loss(input, target, smooth=1, sharpen=0):
     intersect = (input * target).sum(dim=2) + smooth
     denominator = (input + target).sum(dim=2) +smooth
     non_intersect = denominator - intersect
-    nominator = 2 * intersect * (1-sharpen) 
+    nominator = 2 * intersect * (1-sharpen)
     dice = 2 * nominator / (non_intersect + nominator + eps)
     # Compute the negative Dice loss
     loss = 1 - dice.mean()
@@ -235,13 +237,13 @@ def dice_loss(input, target, smooth=1, sharpen=0):
 def focal_loss(inputs, targets, alpha=0.25, gamma=2):
     """
     Implementation of Focal Loss in PyTorch.
-    
+
     Args:
     - inputs: torch.Tensor, predicted binary class probabilities
     - targets: torch.Tensor, true binary class labels
     - alpha: float, weighting factor for hard samples (default: 0.25)
     - gamma: float, focusing parameter for modulating factor (default: 2)
-    
+
     Returns:
     - F_loss: torch.Tensor, computed focal loss
     """
@@ -265,7 +267,7 @@ def ret_surf_points(surf_p, max_num = None):
 
 def surf_loss(w_seg, seg1, flow):
     '''w_seg, seg1: binary map for organs
-    flow: the flow field from 
+    flow: the flow field from
     use gumble max?
     '''
     w_surf = find_surf(w_seg)

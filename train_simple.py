@@ -311,6 +311,7 @@ def main():
             # if start_iter is not 0, the 'if' statement will work
             if iteration>=len(train_loader): break
             log_scalars = {}
+            log_list = {}
             loss_dict = {}
             img_dict = {}
             loss = 0
@@ -394,6 +395,7 @@ def main():
             # mask_moving: the mask where the ratio is computed, used for VP loss
             # vp_seg_mask: the mask where the ratio is kept, used for VP loss
             # NOTE similarity loss
+            sims = []
             if not args.masked:
                 sim = sim_loss(fixed, warped[-1])
                 mask_moving = seg2
@@ -413,7 +415,8 @@ def main():
 
                     if args.hyper_vp:
                         hyp_compute_mask = (1-warped_soft_mask)**(hyp_param/args.vol_preserve)[...,None,None,None]
-                        sim = sim_loss(fixed, warped[-1], hyp_compute_mask)
+                        sims = sim_loss(fixed, warped[-1], hyp_compute_mask, return_mean=False)
+                        sim = sims.mean()
                     else:
                         sim = sim_loss(fixed, warped[-1], 1-warped_soft_mask)
                     # vp_seg_mask now is a continuous mask that represents how shrinky the voxel is
@@ -422,7 +425,8 @@ def main():
                     with torch.no_grad():
                         warped_hard_mask = mmodel.reconstruction(compute_mask.float(), agg_flows[-1]) > 0.5
                     # TODO: may consider mask outside organ regions
-                    sim = masked_sim_loss(fixed, warped[-1], warped_hard_mask)
+                    sims = masked_sim_loss(fixed, warped[-1], warped_hard_mask)
+                    sim = sims.mean()
                     vp_seg_mask = warped_mask
             loss = loss + sim
 
@@ -433,6 +437,7 @@ def main():
             loss = loss + reg
 
             # NOTE VP loss
+            k_szs = []
             if args.vol_preserve>0:
                 # get vp_tum_loc: tum_mask for vp
                 if args.size_type=='organ':
@@ -462,17 +467,21 @@ def main():
 
                 # calculate the vp loss based on change of TSR
                 ## Notice!! It should be *ratio instead of /ratio
-                k_sz = 0
+                k_sz = torch.zeros(1).cuda()
                 det_flow = (jacobian_det(agg_flows[-1], return_det=True).abs()*ratio).clamp(min=1/3, max=3)
                 vp_mask = F.interpolate(vp_tum_loc.float(), size=det_flow.shape[-3:], mode='trilinear', align_corners=False).float().squeeze() # B, S, H, W
                 ## normalize by single voxel
                 adet_flow = torch.where(det_flow>1, det_flow, (1/det_flow))
+                if args.hyper_vp:
+                    adet_flow = adet_flow*(hyp_param[:,0,None,None,None])
                 k_sz_voxel = (adet_flow*vp_mask).sum()/vp_mask.sum()
+                k_szs = (adet_flow*vp_mask).sum(dim=(-1,-2,-3)) / vp_mask.sum(dim=(-1,-2,-3))
                 ## if normalize by each img in batch: check norm_img()
 
                 # add vp_loss to loss
                 k_sz_orig = k_sz + k_sz_voxel
-                k_sz = k_sz_orig  * args.vol_preserve
+                if not args.hyper_vp:
+                    k_sz = k_sz_orig  * args.vol_preserve
                 if torch.isnan(k_sz): k_sz = sim.new_zeros(1) # k_sz is all nan
                 k_sz = reduce_mean(k_sz)
                 loss = loss + k_sz
@@ -491,6 +500,23 @@ def main():
                 import ipdb; ipdb.set_trace()
                 loss = 0
             loss.backward()
+            if args.hyper_vp and loss>0:
+                # keep 3 decimals
+                # calculate loss and the gradient of the loss for each hyper_param
+                total_norm = 0
+                total_params = 0
+                for name, p in model.named_parameters():
+                    if p.grad is None:
+                        continue
+                    param_norm = p.grad.data.norm(2)
+                    total_norm += param_norm.item() ** 2
+                    total_params += p.numel()
+                total_norm = total_norm ** (1. / 2)
+                avg_norm = total_norm / len(hyp_param) / total_params
+                # log them, keep 3 decimals
+                log_list["hyp_value"] = hyp_param.tolist()
+                log_list["sim_loss"] = sims.tolist()
+                log_list["vp_loss"] = k_szs.tolist()
             optim.step()
             # ddp reduce of loss
             loss, sim, reg = reduce_mean(loss), reduce_mean(sim), reduce_mean(reg)
@@ -540,6 +566,17 @@ def main():
                     writer.add_scalar('train/lr', scheduler.get_last_lr()[0], epoch * len(train_loader) + iteration)
                     for k in log_scalars:
                         writer.add_scalar('train/'+k, log_scalars[k], epoch * len(train_loader) + iteration)
+                    if args.hyper_vp:
+                        for k in log_list:
+                            writer.add_histogram('train/'+k, np.array(log_list[k]), epoch * len(train_loader) + iteration)
+                    if args.hyper_vp:
+                        print('\n')
+                        print("hyp param is  ", '\t'.join([str(i.item())[:5] for i in hyp_param]))
+                        print("sim loss is:", "\t".join([str(i.item())[:5] for i in sims]))
+                        print("vp loss is: ", "\t".join([str(i.item())[:5] for i in k_szs]))
+                        print("avg hyper param:", hyp_param.mean().item(), "avg grad norm:", avg_norm, f"({total_params} params)")
+                        # writer.add_scalar('train/avg_hyper_param', hyp_param.mean().item(), epoch * len(train_loader) + iteration)
+                        # writer.add_scalar('train/avg_grad_norm', total_norm, epoch * len(train_loader) + iteration)
 
                 if args.val_steps>0  and (iteration%args.val_steps==0 or args.debug):
                     print(f">>>>> Validation <<<<<")

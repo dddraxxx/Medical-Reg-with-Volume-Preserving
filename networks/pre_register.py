@@ -182,7 +182,7 @@ class PreRegister(nn.Module):
                                                                             seg2[0,0].round().long(),
                                                                             to_onehot=True, inter_dst=5), inter_dst=1)
             # to visualize soft masks
-            if cfg.debug:
+            if cfg.debug and False:
                 dm1 = trsf_f(rev_flow_ratio[0,0])
                 dm2 = trsf_f(rev_flow_ratio2[0,0])
                 dm2[~(seg2[0,0]>0.5)] = 0
