@@ -31,9 +31,9 @@ If you use the code or the models in your research, please cite:
 
 ## Dataset
 
-The `dataset` folder provides sample JSON files for your reference. However, it cannot be directly used here (containing private test data). For training and testing data, you could refer to https://github.com/microsoft/Recursive-Cascaded-Networks#datasets and directly download their data file as a start point.
+The `dataset` folder provides sample JSON files for your reference. However, it cannot be directly used here (containing private test data). For training and testing data, you could refer to [RCN](https://github.com/microsoft/Recursive-Cascaded-Networks#datasets) and directly download their data file as a start point.
 
-You could also build your own H5 and JSON files. Each instance in H5 file is a complete 3D image with standard preprocessing (refer to https://github.com/MIC-DKFZ/nnUNet) and is resized to 128x128x128.
+You could also build your own H5 and JSON files. Each instance in H5 file is a complete 3D image with standard preprocessing (refer to [nnUNet](https://github.com/MIC-DKFZ/nnUNet)) and is resized to 128x128x128.
 
 ## Installation
 `pip install -r requirements.txt`
