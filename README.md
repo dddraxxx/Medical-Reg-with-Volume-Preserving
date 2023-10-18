@@ -1,19 +1,28 @@
-<span style="color:red"> This is a pytorch version of the [original tensorflow implementation](https://github.com/microsoft/Recursive-Cascaded-Networks) and is based on [this repo](https://github.com/ivan-jgr/recursive-cascaded-networks). </span>
+# Preserving Tumor Volumes for Unsupervised Medical Image Registration (ICCV 2023)
 
-# Recursive Cascaded Networks for Unsupervised Medical Image Registration
+by Qihua Dong, Hao Du, Ying Song, Yan Xu, Jing Liao
 
-Paper link: [[arXiv]](https://arxiv.org/pdf/1907.12353)
+Paper link: [[arXiv]](https://arxiv.org/abs/2309.10153)
 
-
-*Recursive cascaded networks*, a general architecture that enables learning deep cascades, for deformable image registration. The moving image is warped successively by each cascade and finally aligned to the fixed image.
+## Inroduction
 
 ![cascade_example](./images/cascade_example.png)
-
-![cascade_architecture](./images/cascade_architecture.png)
+![Pipelilne](./read_me/pipeline.png)
 
 This repository includes:
 
-* The recursive cascade network implementation with VTN as a base network for 3D and 2D images.
+* The Volume-Preserving-Registration Networks for 3D medical images.
+
+If you use the code, the models, or our data in your research, please cite:
+@inproceedings{dong2023preserving,
+  title={Preserving Tumor Volumes for Unsupervised Medical Image Registration},
+  author={Dong, Qihua and Du, Hao and Song, Ying and Xu, Yan and Liao, Jing},
+  booktitle={Proceedings of the IEEE/CVF International Conference on Computer Vision},
+  pages={21208--21218},
+  year={2023}
+}
+``
+
 
 ## Dataset
 
@@ -23,8 +32,7 @@ Refers to https://github.com/microsoft/Recursive-Cascaded-Networks#datasets.
 
 `python train.py -d DATASET -g GPU_ID`
 
-## find something new
-
+## Evaluation
 
 
 ## Acknowledgement
