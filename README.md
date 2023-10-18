@@ -7,7 +7,7 @@ by Qihua Dong, Hao Du, Ying Song, Yan Xu, Jing Liao
 ## Inroduction
 Medical image registration is a critical task that estimates the spatial correspondence between pairs of images. However, current traditional and deep-learning-based methods rely on similarity measures to generate a deforming field, which often results in disproportionate volume changes in dissimilar regions, especially in tumor regions. These changes can significantly alter the tumor size and underlying anatomy, which limits the practical use of image registration in clinical diagnosis. To address this issue, we have formulated image registration with tumors as a constraint problem that preserves tumor volumes while maximizing image similarity in other normal regions.
 <p align="center">
-  <img src="https://github.com/dddraxxx/Medical-Reg-with-Volume-Preserving/assets/52069185/db827015-6b6d-4e1f-912e-6f0ede9e89a0" alt="image" width="500"/>
+  <img src="./read_me/teaser.png" alt="image" width="500"/>
 </p>
 
 This repository includes:
