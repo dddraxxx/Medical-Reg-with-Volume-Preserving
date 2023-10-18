@@ -30,8 +30,6 @@ def build_precompute(model, dataset, cfg):
     template_seg = torch.tensor(np.array(template_seg).astype(np.float32)).unsqueeze(0).unsqueeze(0).cuda()
     # load pretrained model
     state_path = stage1_cfg[cfg.data_type][cfg.base_network]
-    if cfg.stage1_rev:
-        print('using rev_flow')
     return model.build_preregister(template_image, template_seg, state_path, cfg.base_network)
 
 def read_cfg(model_path):
@@ -53,5 +51,3 @@ def read_cfg(model_path):
     cfg = ml_collections.ConfigDict(cfg)
     print(cfg)
     return cfg
-
-# read_cfg('/home/hynx/regis/recursive-cascaded-networks/logs/liver/VTN/Feb15_013352_1-hard-vporgan.1/')

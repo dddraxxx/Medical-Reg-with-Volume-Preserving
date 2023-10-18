@@ -20,84 +20,71 @@ from torch.utils.data import DataLoader
 from metrics.losses import det_loss, focal_loss, jacobian_det, masked_sim_loss, ortho_loss, reg_loss, dice_jaccard, sim_loss, surf_loss, dice_loss
 import datetime as datetime
 from torch.utils.tensorboard import SummaryWriter
-# from data_util.ctscan import sample_generator
 from data_util.dataset import Data, Split
 from torch import distributed as dist
 from torch.nn.parallel import DistributedDataParallel as DDP
 from run_utils import build_precompute, read_cfg
 
 parser = argparse.ArgumentParser()
+
+# Training settings
 parser.add_argument('-bs', "--batch_size", type=int, default=4)
-parser.add_argument('-base', '--base_network', type=str, default='VTN')
-parser.add_argument('-n', "--n_cascades", type=int, default=3)
 parser.add_argument('-e', "--epochs", type=int, default=5)
 parser.add_argument("-r", "--round", type=int, default=20000)
 parser.add_argument("-v", "--val_steps", type=int, default=1000)
-parser.add_argument('-cf', "--checkpoint_frequency", default=0.1, type=float)
+parser.add_argument("--lr", type=float, default=1e-4)
+parser.add_argument('--lr_scheduler', default='step', type=str, choices=['linear', 'step', 'cosine'], help='lr scheduler')
+parser.add_argument('-aug', '--augment', type=lambda x: x.lower() in ['true', '1', 't', 'y', 'yes'], default=False, help='Augment data')
+parser.add_argument('--training_scheme', type=lambda x:int(x) if x.isdigit() else x, default='', help='Specifies a training scheme')
+parser.add_argument('-vs', '--val_scheme', type=lambda x:int(x) if x.isdigit() else x, default='', help='Specifies a validation scheme')
+parser.add_argument('--debug', action='store_true', help="run the script without saving files")
+
+# Checkpoint settings
+parser.add_argument('-cf', "--checkpoint_frequency", type=float, default=0.1)
 parser.add_argument('-c', "--checkpoint", type=lambda x: os.path.realpath(x), default=None)
 parser.add_argument('-ct', '--continue_training', action='store_true')
 parser.add_argument('--ctt', '--continue_training_this', type=lambda x: os.path.realpath(x), default=None)
-parser.add_argument('-g', '--gpu', type=str, default='', help='GPU to use')
+
+# Dataset settings
 parser.add_argument('-d', '--dataset', type=str, default='datasets/liver_cust.json', help='Specifies a data config')
-parser.add_argument("-ts", "--training_scheme", type=lambda x:int(x) if x.isdigit() else x, default='', help='Specifies a training scheme')
-parser.add_argument('-vs', '--val_scheme', type=lambda x:int(x) if x.isdigit() else x, default='', help='Specifies a validation scheme')
-parser.add_argument('--debug', action='store_true', help="run the script without saving files")
+parser.add_argument('-ic', '--in_channel', type=int, default=2, help='Input channel number')
+parser.add_argument('-g', '--gpu', type=str, default='', help='GPU to use')
 parser.add_argument('--name', type=str, default='')
 
-parser.add_argument('--lr_scheduler', default = 'step', type=str, help='lr scheduler', choices=['linear', 'step', 'cosine'])
-parser.add_argument('--lr', type=float, default=1e-4)
-parser.add_argument('-aug', '--augment', default=False, type=lambda x: x.lower() in ['true', '1', 't', 'y', 'yes'], help='Augment data')
-parser.add_argument('-ic', '--in_channel', default=2, type=int, help='Input channel number')
-# losses
+# Regular loss settings
 parser.add_argument('--ortho', type=float, default=0.1, help="use ortho loss")
 parser.add_argument('--det', type=float, default=0.1, help="use det loss")
 parser.add_argument('--reg', type=float, default=1, help="use reg loss")
-parser.add_argument('-inv', '--invert_loss', action='store_true', help="invertibility loss")
-parser.add_argument('--surf_loss', default=0, type=float, help='Surface loss weight')
-parser.add_argument('-dc', '--dice_loss', default=0, type=float, help='Dice loss weight')
-# for stage1 masks
-parser.add_argument('-m', '--masked', choices=['soft', 'seg', 'hard'], default='',
-     help="mask the tumor part when calculating similarity loss")
+
+# Network structure settings
+parser.add_argument('-base', '--base_network', type=str, default='VTN')
+parser.add_argument('-n', "--n_cascades", type=int, default=3)
+parser.add_argument('-ua', '--use_affine', type=lambda x: x.lower() in ['true', '1', 't', 'y', 'yes'], default=True, help="whether to use affine transformation")
+
+# Mask and transformation settings
+parser.add_argument('-m', '--masked', choices=['soft', 'hard'], default='', help="mask the tumor part when calculating similarity loss")
 parser.add_argument('-msd', '--mask_seg_dice', type=float, default=-1, help="choose the accuracy of seg mask when using seg mask")
 parser.add_argument('-mt', '--mask_threshold', type=float, default=1.5, help="volume changing threshold for mask")
-parser.add_argument('-mn', '--masked_neighbor', type=int, default=3, help="for masked neibor calculation")
-parser.add_argument('-trsf', '--soft_transform', default='sigm', type=str, help='Soft transform')
-parser.add_argument('-bnd_thick', '--boundary_thickness', default=0.5, type=float, help='Boundary thickness')
-parser.add_argument('-use2', '--use_2nd_flow', default=False, type=lambda x: x.lower() in ['true', '1', 't', 'y', 'yes'], help='Use 2nd flow')
-parser.add_argument('-useb', '--use_bilateral', default=True, type=lambda x: x.lower() in ['true', '1', 't', 'y', 'yes'], help='Use bilateral filter')
-parser.add_argument('-pc', '--pre_calc', default=False, type=lambda x: x.lower() in ['true', '1', 't', 'y', 'yes'], help='Pre-calculate the flow')
-parser.add_argument('-s1r', '--stage1_rev', type=lambda x: x.lower() in ['true', '1', 't', 'y', 'yes'], default=False, help="whether to use reverse flow in stage 1")
+parser.add_argument('-mn', '--masked_neighbor', type=int, default=3, help="for masked neighbor calculation")
+parser.add_argument('-trsf', '--soft_transform', type=str, default='sigm', help='Soft transform')
+parser.add_argument('-bnd_thick', '--boundary_thickness', type=float, default=0.5, help='Boundary thickness')
+parser.add_argument('-use2', '--use_2nd_flow', type=lambda x: x.lower() in ['true', '1', 't', 'y', 'yes'], default=False, help='Use 2nd flow')
+parser.add_argument('-useb', '--use_bilateral', type=lambda x: x.lower() in ['true', '1', 't', 'y', 'yes'], default=True, help='Use bilateral filter')
 parser.add_argument('-os', '--only_shrink', type=lambda x: x.lower() in ['true', '1', 't', 'y', 'yes'], default=True, help="whether to only use shrinkage in stage 1")
-parser.add_argument('-uh', '--use_seg_help', type=lambda x:x.lower() in ['true', '1', 't', 'y', 'yes'], default=False, help="whether to use segmentation help in stage 1")
-# for VP loss
-parser.add_argument('-vp', '--vol_preserve', type=float, default=0, help="use volume-preserving loss")
-parser.add_argument('-st', '--size_type', choices=['organ', 'tumor', 'tumor_gt', 'constant', 'dynamic', 'reg'], default='tumor', help = 'organ means VP works on whole organ, tumor means VP works on tumor region, tumor_gt means VP works on tumor region with ground truth, constant means VP ratio is a constant, dynamic means VP has dynamic weight, reg means VP is replaced by reg loss')
-parser.add_argument('--ks_norm', default='voxel', choices=['image', 'voxel'])
-parser.add_argument('-w_ksv', '--w_ks_voxel', default=1, type=float, help='Weight for using soft mask method in ks loss')
-# network structure
-parser.add_argument('-ua', '--use_affine', type=lambda x: x.lower() in ['true', '1', 't', 'y', 'yes'], default=True, help="whether to use affine transformation")
-# log option
-parser.add_argument('-wb', '--use_wandb', type=lambda x: x.lower() in ['true', '1', 't', 'y', 'yes'], default=True, help="whether to use wandb")
 
-# hyper VP
+# Volume preserving loss settings
+parser.add_argument('-vp', '--vol_preserve', type=float, default=0, help="use volume-preserving loss")
+parser.add_argument('-st', '--size_type', choices=['organ', 'tumor', 'dynamic'], default='tumor', help='organ means VP works on whole organ, tumor means VP works on tumor region, dynamic means VP has dynamic weight')
+parser.add_argument('--ks_norm', default='voxel', choices=['image', 'voxel'])
+parser.add_argument('-w_ksv', '--w_ks_voxel', type=float, default=1, help='Weight for using soft mask method in ks loss')
+
+# Hyper VP setting (Ignored, under development)
 parser.add_argument('-hpv', '--hyper_vp', action='store_true', help="whether to use hypernet for VP")
 
-# mask calculation needs an extra mask as input
+# Default settings based on other arguments
 parser.set_defaults(in_channel=3 if parser.parse_args().masked else 2)
-parser.set_defaults(stage1_rev=True if parser.parse_args().base_network == 'VXM' else False)
 parser.set_defaults(n_cascades=1 if parser.parse_args().base_network != 'VTN' else 3)
 parser.set_defaults(use_affine=0 if parser.parse_args().base_network == 'DMR' else 1)
-
-
-if __name__=='__main__':
-    args = parser.parse_args()
-    # if args.gpu:
-    #     os.environ["CUDA_VISIBLE_DEVICES"] = args.gpu
-    # set gpu to the one with most free memory
-    import subprocess
-    GPU_ID = subprocess.getoutput('nvidia-smi --query-gpu=memory.free --format=csv,nounits,noheader | nl -v 0 | sort -nrk 2 | cut -f 1| head -n 1 | xargs')
-    print('Using GPU', GPU_ID)
-    os.environ['CUDA_VISIBLE_DEVICES'] = GPU_ID
 
 def reduce_mean(tensor):
     if dist.is_initialized():
@@ -119,16 +106,7 @@ def hyp_param_generator(param_range, oversample=.2, batch=1):
             hyp_param[i] = torch.rand(1) * (param_range[-1] - param_range[0]) + param_range[0]
     return hyp_param[:,None]
 
-# main function for training
-def main():
-    # SECTION setup
-    if 'LOCAL_RANK' in os.environ:
-        local_rank = int(os.environ['LOCAL_RANK'])
-        torch.cuda.set_device(local_rank)
-        dist.init_process_group(backend='nccl', init_method='env://')
-    else:
-        local_rank = 0
-
+def main(args):
     train_scheme = args.training_scheme or Split.TRAIN
     val_scheme = args.val_scheme or Split.VALID
     print('Train', train_scheme)
@@ -139,10 +117,10 @@ def main():
     ckp_freq = int(args.checkpoint_frequency * args.round)
     args.data_type = data_type
 
-    # NOTE setup save dir, log dir and loading dir
+    # get time and generate run_id
     dt = datetime.datetime.now(tz=datetime.timezone(datetime.timedelta(hours=8))) # HK time
     run_id = '_'.join([dt.strftime('%b%d-%H%M%S'),
-                       str(data_type)[:2] + str(train_scheme) + ('pc' if args.pre_calc else ''), # what dataset to use and whether to pre-calculate the flow
+                       str(data_type)[:2] + str(train_scheme), # what dataset to use
                        args.base_network+'x'+str(args.n_cascades), # base network and number of cascades
                        args.name,
                        args.masked + (f'thr{args.mask_threshold}' + args.soft_transform+'bnd'+str(args.boundary_thickness)+'st{}'.format(1+args.use_2nd_flow) + ('bf' if args.use_bilateral and args.use_2nd_flow else '')
@@ -154,8 +132,6 @@ def main():
     # mkdirs for log and Tensorboard
     if not args.debug:
         if not args.ctt:
-            ### TODO: Add the wandb logger
-            # wandb.init(project='RCN', config=args, sync_tensorboard=True)
             print("Creating log dir")
             log_dir = os.path.join('./logs', data_type, args.base_network, 'hyp' if args.hyper_vp else str(train_scheme), run_id)
             os.path.exists(log_dir) or os.makedirs(log_dir)
@@ -183,7 +159,7 @@ def main():
                 if 'training' not in k and 'continue' not in k and 'checkpoint' not in k and 'ctt' not in k:
                     setattr(args, k, v)
 
-        # record args
+        # record args for reuse in evaluation
         with open(log_dir+'/args.txt', 'a') as f:
             from pprint import pprint
             pprint(args.__dict__, f)
@@ -215,11 +191,7 @@ def main():
         print('\033[92m')
         writer = SummaryWriter(log_dir=log_dir)
         print('\033[0m')
-    if args.debug:
-        # torch.autograd.set_detect_anomaly(True)
-        pass
 
-    # NOTE build model
     # read config
     with open(args.dataset, 'r') as f:
         cfg = json.load(f)
@@ -239,17 +211,12 @@ def main():
 
     if args.masked in ['soft', 'hard']:
         cfg_train = ml_collections.ConfigDict(args.__dict__)
-        precompute_h5 = False
         build_precompute(model, train_dataset, cfg_train)
 
-    if dist.is_initialized():
-        model = DDP(model, device_ids=[local_rank], output_device=local_rank)
-        mmodel = model.module
-    else: mmodel = model
     trainable_params = []
-    for submodel in mmodel.stems:
+    for submodel in model.stems:
         trainable_params += list(submodel.parameters())
-    trainable_params += list(mmodel.reconstruction.parameters())
+    trainable_params += list(model.reconstruction.parameters())
 
     # NOTE build optimizer
     lr = args.lr
@@ -303,12 +270,8 @@ def main():
         vis_batch = []
         t0 = default_timer()
         st_t = default_timer()
-        # !SECTION
         # SECTION training
         for iteration, data in enumerate(train_loader, start=start_iter):
-            # torch clear cache
-            # torch.cuda.empty_cache()
-            # if start_iter is not 0, the 'if' statement will work
             if iteration>=len(train_loader): break
             log_scalars = {}
             log_list = {}
@@ -332,13 +295,6 @@ def main():
                 input_seg, compute_mask, ls, idct = model.pre_register(fixed, moving, seg2, training=True, cfg=cfg_train)
                 log_scalars.update(ls)
                 img_dict.update(idct)
-            # settle down input_seg for the network and VP loss
-            elif args.masked=='seg':
-                input_mask = seg2.float()
-                if args.mask_seg_dice>0 and args.mask_seg_dice<1:
-                    input_mask = rand_mask_(input_mask)
-                    img_dict['rand_mask'] = visualize_3d(draw_seg_on_vol(input_mask[0,0], seg2[0,0].long(), to_onehot=True, inter_dst=5), inter_dst=1).cpu()
-                input_seg = input_mask
 
             if args.in_channel==3:
                 moving_ = torch.cat([moving, input_seg], dim=1)
@@ -372,7 +328,7 @@ def main():
                 loss = loss + ort + det
 
             with torch.no_grad():
-                w_seg2 = mmodel.reconstruction(seg2.float(), agg_flows[-1])
+                w_seg2 = model.reconstruction(seg2.float(), agg_flows[-1])
                 warped_tseg = w_seg2>1.5
                 w_oseg = w_seg2>0.5
 
@@ -391,10 +347,8 @@ def main():
                 log_scalars['dice_organ'] = dice_organ.mean().item()
 
             # default masks used for VP loss
-            ### what is we dont mask the tumor in the fixed image?
             # mask_moving: the mask where the ratio is computed, used for VP loss
             # vp_seg_mask: the mask where the ratio is kept, used for VP loss
-            # NOTE similarity loss
             sims = []
             if not args.masked:
                 sim = sim_loss(fixed, warped[-1])
@@ -403,15 +357,12 @@ def main():
             else:
                 mask_moving = input_seg
                 with torch.no_grad():
-                    warped_mask = mmodel.reconstruction(input_seg.float(), agg_flows[-1])
+                    warped_mask = model.reconstruction(input_seg.float(), agg_flows[-1])
                 vp_seg_mask = warped_mask
-                if args.masked == 'seg':
-                    mask = warped_mask>1.5 #| (seg1>1.5) ? may try this
-                    sim = masked_sim_loss(fixed, warped[-1], mask)
-                elif args.masked == 'soft':
+                if args.masked == 'soft':
                     # soft mask * sim loss per pixel, soft mask should be computed from stage1 model
                     with torch.no_grad():
-                        warped_soft_mask = mmodel.reconstruction(compute_mask.float(), agg_flows[-1])
+                        warped_soft_mask = model.reconstruction(compute_mask.float(), agg_flows[-1])
 
                     if args.hyper_vp:
                         hyp_compute_mask = (1-warped_soft_mask)**(hyp_param/args.vol_preserve)[...,None,None,None]
@@ -419,24 +370,20 @@ def main():
                         sim = sims.mean()
                     else:
                         sim = sim_loss(fixed, warped[-1], 1-warped_soft_mask)
-                    # vp_seg_mask now is a continuous mask that represents how shrinky the voxel is
                     vp_seg_mask = warped_mask
                 elif args.masked =='hard':
                     with torch.no_grad():
-                        warped_hard_mask = mmodel.reconstruction(compute_mask.float(), agg_flows[-1]) > 0.5
-                    # TODO: may consider mask outside organ regions
+                        warped_hard_mask = model.reconstruction(compute_mask.float(), agg_flows[-1]) > 0.5
                     sims = masked_sim_loss(fixed, warped[-1], warped_hard_mask)
                     sim = sims.mean()
                     vp_seg_mask = warped_mask
             loss = loss + sim
 
-            # NOTE reg loss
             reg = reg_loss(
                 flows[int(args.use_affine):]
                 ) * args.reg
             loss = loss + reg
 
-            # NOTE VP loss
             k_szs = []
             if args.vol_preserve>0:
                 # get vp_tum_loc: tum_mask for vp
@@ -446,10 +393,6 @@ def main():
                 elif args.size_type=='tumor':
                     # keep the volume of the tumor region
                     vp_tum_loc = vp_seg_mask>1.5
-                elif args.size_type=='tumor_gt':
-                    # use warped gt mask to know exactly the location of tumors
-                    vp_tum_loc = w_seg2>1.5
-                    vp_seg_mask = w_seg2
                 elif args.size_type=='dynamic':
                     # the vp_loc is a weighted mask that is calculated from the ratio of the tumor region
                     vp_tum_loc = warped_soft_mask # B, C, S, H, W
@@ -497,11 +440,11 @@ def main():
                 loss_dict['vol_preserve_loss'] = k_sz_orig.item()
 
             if loss.isnan().any():
-                import ipdb; ipdb.set_trace()
+                # sometimes happen if data contatins no tumor, may need to check
+                # import ipdb; ipdb.set_trace()
                 loss = 0
             loss.backward()
             if args.hyper_vp and loss>0:
-                # keep 3 decimals
                 # calculate loss and the gradient of the loss for each hyper_param
                 total_norm = 0
                 total_params = 0
@@ -528,8 +471,8 @@ def main():
             train_epoch_loss = train_epoch_loss + loss.item()
             train_reg_loss = train_reg_loss + reg.item()
 
-            # NOTE eval
-            if local_rank==0 and (iteration%10==0):
+            # eval
+            if iteration%10==0:
                 avg_time_per_iter = (default_timer() - st_t) / (iteration + 1 - start_iter)
                 est_time_for_epo = avg_time_per_iter * (len(train_loader) - iteration)
                 est_time_for_train = (args.epochs - epoch - 1) * len(train_loader) * avg_time_per_iter + est_time_for_epo
@@ -600,17 +543,14 @@ def main():
                                     mask = rand_mask_(mask)
                                 moving_ = torch.cat([moving, mask], dim=1)
                             elif args.masked in ['soft', 'hard']:
-                                if precompute_h5:
-                                    input_seg, compute_mask = data['input_seg'].cuda(), data['compute_mask'].cuda()
-                                else:
-                                    input_seg, compute_mask = model.pre_register(fixed, moving, seg2, training=False, cfg=cfg_train)
+                                input_seg, compute_mask = model.pre_register(fixed, moving, seg2, training=False, cfg=cfg_train)
                                 moving_ = torch.cat([moving, input_seg], dim=1)
                             else:
                                 moving_ = moving
 
                             if args.hyper_vp:
-                                warped_, flows, agg_flows = mmodel(fixed, moving_, hyp_input=fixed.new_zeros(fixed.shape[0], 1))
-                            else: warped_, flows, agg_flows = mmodel(fixed, moving_, )
+                                warped_, flows, agg_flows = model(fixed, moving_, hyp_input=fixed.new_zeros(fixed.shape[0], 1))
+                            else: warped_, flows, agg_flows = model(fixed, moving_, )
 
                             warped = [i[:, :1] for i in warped_]
                             # w_seg2 is the warped gt mask of moving
@@ -659,7 +599,7 @@ def main():
                         for k, im in tb_imgs.items():
                             writer.add_image(f'val/{k}', visualize_3d(im[0,0]), epoch * len(train_loader) + iteration)
 
-            if local_rank==0 and iteration % ckp_freq == 0:
+            if iteration % ckp_freq == 0:
                 if not args.debug and not os.path.exists('./ckp/model_wts/'+run_id):
                     os.makedirs('./ckp/model_wts/'+run_id)
 
@@ -667,10 +607,10 @@ def main():
                 reg_loss_log.append(train_reg_loss / iteration)
 
                 ckp = {}
-                ckp['stem_state_dict'] = mmodel.stems.state_dict()
+                ckp['stem_state_dict'] = model.stems.state_dict()
                 # save hypernet state dict if exists
                 if args.hyper_vp:
-                    ckp['hypernet_state_dict'] = mmodel.hypernet.state_dict()
+                    ckp['hypernet_state_dict'] = model.hypernet.state_dict()
 
                 ckp['train_loss'] = train_loss_log
                 ckp['val_loss'] = val_loss_log
@@ -686,21 +626,15 @@ def main():
             t0 = default_timer()
         scheduler.step()
         start_iter = 0
-    if args.use_wandb:
-        wandb.finish()
 
 if __name__ == '__main__':
-    try:
-        main()
-    except KeyboardInterrupt:
-        # rename log_dir
-        log_dir = args.log_dir
-        print('training interrupted')
-        print(log_dir)
-        # os.rename(log_dir, log_dir+'_interrupted')
-    except Exception as e:
-        # rename log_dir
-        log_dir = args.log_dir
-        print(log_dir)
-        # os.rename(log_dir, log_dir+'_error')
-        raise e
+    args = parser.parse_args()
+    if args.gpu:
+        os.environ["CUDA_VISIBLE_DEVICES"] = args.gpu
+    # set gpu to the one with most free memory
+    import subprocess
+    GPU_ID = subprocess.getoutput('nvidia-smi --query-gpu=memory.free --format=csv,nounits,noheader | nl -v 0 | sort -nrk 2 | cut -f 1| head -n 1 | xargs')
+    print('Using GPU', GPU_ID)
+    os.environ['CUDA_VISIBLE_DEVICES'] = GPU_ID
+
+    main(args)

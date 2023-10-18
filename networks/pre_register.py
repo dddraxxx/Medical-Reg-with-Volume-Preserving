@@ -98,13 +98,7 @@ class PreRegister(nn.Module):
             moving_st1 = bf3d(moving)
         else:
             moving_st1 = moving
-        if not cfg.stage1_rev:
-            w_moving, w_moving_seg, rs1_flow = warp(fixed, moving_st1, mask_moving, stage1_model)
-        else:
-            w_moving, _, rs1_flow, ss1_flow = stage1_model(fixed, moving_st1, return_neg=cfg.stage1_rev)
-            rs1_flow, ss1_flow = rs1_flow[-1], ss1_flow[-1]
-            w_moving = w_moving[-1]
-            w_moving_seg = stage1_model.reconstruction(mask_moving, rs1_flow)
+        w_moving, w_moving_seg, rs1_flow = warp(fixed, moving_st1, mask_moving, stage1_model)
         target_ratio = (w_moving_seg>0.5).sum(dim=(2,3,4), keepdim=True).float() / (mask_moving>0.5).sum(dim=(2,3,4), keepdim=True).float()
 
         ### better to calculate the ratio compared to the target ratio
@@ -117,7 +111,7 @@ class PreRegister(nn.Module):
             ### will it cause the shrinking of tumor?
             ## reverse it to input seg, but it is too slow
             # w_moving_rev_flow = cal_rev_flow_gpu(rs1_flow)
-            w_moving_rev_flow = stage1_model(moving, w_moving)[2][-1] if not cfg.stage1_rev else ss1_flow
+            w_moving_rev_flow = stage1_model(moving, w_moving)[2][-1]
             rev_flow_ratio = stage1_model.reconstruction(flow_ratio, w_moving_rev_flow)
         ## below for debugging
         # rw_moving = stage1_model.reconstruction(w_moving, w_moving_rev_flow)
