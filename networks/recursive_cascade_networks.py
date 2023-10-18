@@ -40,7 +40,7 @@ class RecursiveCascadeNetwork(nn.Module):
         assert base_network in BASE_NETWORK
         base = eval(base_network)
         for i in range(n_cascades):
-            self.stems.append(base(im_size=im_size, flow_multiplier=1.0 / n_cascades, in_channels=in_channels, hyper_net=hyper_net))
+            self.stems.append(base(im_size=im_size, flow_multiplier=1.0 / n_cascades, in_channels=in_channels))
 
         # Parallelize across all available GPUs
         # if torch.cuda.device_count() > 1:
@@ -143,7 +143,7 @@ class RecursiveCascadeNetwork(nn.Module):
             neg_flow = self.stems[0].neg_flow(affine_params['theta'], moving.size())
         for model in self.stems[1:]: # cascades
             # registration between the fixed and the warped from last cascade
-            flow = model(fixed, stem_results[-1], return_neg=return_neg, hyp_tensor=hyp_tensor)
+            flow = model(fixed, stem_results[-1], return_neg=return_neg)
             if return_neg:
                 neg_fl = flow[1]
                 ## reverse flow cannot utilize the affine params

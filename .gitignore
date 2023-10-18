@@ -12,6 +12,12 @@ datasets/*
 !datasets/*_cust.json
 tools/extensions/
 wandb/
+eval/intflow
+
+images/
+figures/
+landmark_json/
+lapirn_figures/
 
 *.pdf
 *.tar.gz
