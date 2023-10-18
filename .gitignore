@@ -16,3 +16,4 @@ wandb/
 *.pdf
 *.tar.gz
 *.pkl
+*.svg
