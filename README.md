@@ -16,6 +16,8 @@ This repository includes:
 * Implementation of volume-preserving registration network [RCN](https://github.com/microsoft/Recursive-Cascaded-Networks), [VXM](https://github.com/voxelmorph/voxelmorph/tree/dev) and [TSM](https://github.com/junyuchen245/TransMorph_Transformer_for_Medical_Image_Registration)
 * The volume-preserving loss
 
+> :warning: **Note:** This project is currently under active development. The open-source code is still being refined. We welcome suggestions, feedback, and contributions. Please feel free to [open an issue](https://github.com/dddraxxx/Medical-Reg-with-Volume-Preserving/issues) or submit a pull request!
+
 If you use the code or the models in your research, please cite:
 ```
 @inproceedings{dong2023preserving,
@@ -29,7 +31,7 @@ If you use the code or the models in your research, please cite:
 
 ## Dataset
 
-The `dataset` folder provides sample JSON files for your reference. However, it cannot be directly used here (containing private test data). For training and testing data, you could refer to https://github.com/microsoft/Recursive-Cascaded-Networks#datasets and build your own h5 and JSON files.
+The `dataset` folder provides sample JSON files for your reference. However, it cannot be directly used here (containing private test data). For training and testing data, you could refer to https://github.com/microsoft/Recursive-Cascaded-Networks#datasets and build your own H5 and JSON files.
 
 ## Installation
 `pip install -r requirements.txt`
@@ -47,7 +49,10 @@ python train_simple.py -d datasets/liver_cust.json --name adaptive-vtn -m soft -
 ```
 
 ## Evaluation
-
+To evaluate the specific checkpoint:
+```
+python eval/eval.py -d datasets/liver_cust.json -g gpu_id -v val_subset -c path_to_checkpoint_dir
+```
 
 ## Acknowledgement
 
