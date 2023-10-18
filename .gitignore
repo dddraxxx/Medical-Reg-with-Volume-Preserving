@@ -23,3 +23,5 @@ lapirn_figures/
 *.tar.gz
 *.pkl
 *.svg
+
+!read_me/*
